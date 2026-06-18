@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>BOOKER &middot; The NBA Wins Almanac</title>
+<link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+<header class="masthead">
+  <div class="wrap mast-inner">
+    <div class="brand">
+      <span class="brand-mark">BOOKER</span>
+      <span class="brand-sub">The NBA Wins Above Average Almanac</span>
+    </div>
+    <div class="brand-est">Est. MMXXVI &middot; Play-by-Play Records 2015&ndash;2027</div>
+  </div>
+  <nav class="tabs wrap" id="tabs">
+    <button class="tab is-active" data-view="leaderboard">Leaderboard</button>
+    <button class="tab" data-view="forecast">Win Forecast</button>
+    <button class="tab" data-view="trade">Trade Machine</button>
+    <button class="tab" data-view="leaders">Stat Leaders</button>
+    <button class="tab" data-view="gameodds">Game Odds</button>
+    <button class="tab" data-view="diagnostics">Diagnostics</button>
+    <button class="tab" data-view="method">Methodology</button>
+  </nav>
+</header>
+
+<main class="wrap">
+  <!-- LEADERBOARD ------------------------------------------------------ -->
+  <section id="view-leaderboard" class="view">
+    <h2 class="page-head">Player Wins Above Average</h2>
+    <p class="lede">Ranked by <strong>BookerFormer</strong> WAA (Bayesian RAPM). <strong>BOOKER</strong> = forward-looking predictive WAA per 3000 possessions (pure skill, no aging); <em>Enh WAA</em> is the prior ridge model (click headers to compare orderings). <strong>True Value</strong> = the skill-based fair AAV from a BOOKER + age model fit on free-agent signings, with the market's age penalty removed; surplus = True Value − actual contract. Click any player for a full skill &amp; value breakdown.</p>
+    <div class="controls">
+      <div class="ctrl">
+        <label for="f-season">Season</label>
+        <select id="f-season"></select>
+      </div>
+      <div class="ctrl">
+        <label for="f-team">Team</label>
+        <select id="f-team"><option value="">All teams</option></select>
+      </div>
+      <div class="ctrl grow">
+        <label for="f-search">Search player</label>
+        <input id="f-search" type="search" placeholder="e.g. Jokic" autocomplete="off" />
+      </div>
+      <div class="ctrl">
+        <label for="f-minutes">Min. minutes: <span id="f-minutes-val">250</span></label>
+        <input id="f-minutes" type="range" min="0" max="2500" step="50" value="250" />
+      </div>
+    </div>
+    <p class="result-note" id="lb-note"></p>
+    <div class="table-scroll">
+      <table class="grid" id="lb-table">
+        <thead></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- PLAYER ----------------------------------------------------------- -->
+  <section id="view-player" class="view" hidden>
+    <button class="back" id="player-back">&larr; Back to leaderboard</button>
+    <div class="player-head" id="player-head"></div>
+    <div class="breakdown-grid">
+      <div class="panel">
+        <h3 class="panel-title">Skill profile <span class="panel-hint" id="skill-season-note"></span></h3>
+        <div id="skill-bars"></div>
+      </div>
+      <div class="panel">
+        <h3 class="panel-title">How the value is built</h3>
+        <div id="value-derivation"></div>
+      </div>
+    </div>
+    <div class="panel">
+      <h3 class="panel-title">Career Wins Above Average</h3>
+      <div class="chart-box"><canvas id="player-chart"></canvas></div>
+    </div>
+    <div class="panel" id="skill-traj-panel">
+      <h3 class="panel-title">Skill trajectory <span class="panel-hint">percentile vs league, by season</span></h3>
+      <div class="chart-box"><canvas id="skill-traj-chart"></canvas></div>
+    </div>
+    <div class="panel">
+      <h3 class="panel-title">Season log</h3>
+      <div class="table-scroll">
+        <table class="grid" id="player-table"><thead></thead><tbody></tbody></table>
+      </div>
+    </div>
+  </section>
+
+  <!-- FORECAST --------------------------------------------------------- -->
+  <section id="view-forecast" class="view" hidden>
+    <h2 class="page-head">Season Win Forecast</h2>
+
+    <div class="panel-row">
+      <div class="panel">
+        <div class="panel-title-row">
+          <h3 class="panel-title">Preseason projection
+            <span class="panel-hint">roster &amp; prior-season impact, before a ball is tipped</span></h3>
+          <div class="ctrl inline">
+            <label for="f-pre-season">Season</label>
+            <select id="f-pre-season"></select>
+          </div>
+        </div>
+        <div class="table-scroll">
+          <table class="grid" id="preseason-table"><thead></thead><tbody></tbody></table>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-title-row">
+          <h3 class="panel-title">In-season projection trajectory
+            <span class="panel-hint">projected final wins as games are played</span></h3>
+          <div class="ctrl inline">
+            <label for="f-tl-season">Season</label>
+            <select id="f-tl-season"></select>
+          </div>
+        </div>
+        <div class="chart-box tall"><canvas id="timeline-chart"></canvas></div>
+        <p class="result-note" id="tl-note"></p>
+      </div>
+    </div>
+
+    <h3 class="section-rule">Out-of-sample backtest, 2018&ndash;2026</h3>
+    <div class="cards" id="forecast-cards"></div>
+    <div class="panel-row">
+      <div class="panel">
+        <h3 class="panel-title">Predicted vs actual wins
+          <span class="panel-hint">out-of-sample, before each season</span></h3>
+        <div class="chart-box tall"><canvas id="scatter-chart"></canvas></div>
+      </div>
+      <div class="panel">
+        <h3 class="panel-title">Win-prediction error by season
+          <span class="panel-hint">RMSE vs benchmarks</span></h3>
+        <div class="chart-box tall"><canvas id="rmse-chart"></canvas></div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-title-row">
+        <h3 class="panel-title">Team forecasts</h3>
+        <div class="ctrl inline">
+          <label for="f-fc-season">Season</label>
+          <select id="f-fc-season"></select>
+        </div>
+      </div>
+      <div class="table-scroll">
+        <table class="grid" id="team-table"><thead></thead><tbody></tbody></table>
+      </div>
+    </div>
+  </section>
+
+  <!-- TRADE MACHINE ---------------------------------------------------- -->
+  <section id="view-trade" class="view" hidden>
+    <h2 class="page-head">Trade Machine</h2>
+    <p class="lede" id="trade-lede"></p>
+    <div class="panel">
+      <div class="panel-title-row">
+        <h3 class="panel-title">Multi-asset trade (up to 6 players per side)
+          <span class="panel-hint">fit-adjusted WAA + cap-equivalent 2026 contract values</span></h3>
+      </div>
+      <div class="trade-grid">
+        <div class="trade-side">
+          <label for="trade-team-a">Team A</label>
+          <select id="trade-team-a"></select>
+          <label for="trade-players-a">Sends players <span class="trade-cap">(max 6)</span></label>
+          <select id="trade-players-a" multiple size="12"></select>
+        </div>
+        <div class="trade-mid">&harr;</div>
+        <div class="trade-side">
+          <label for="trade-team-b">Team B</label>
+          <select id="trade-team-b"></select>
+          <label for="trade-players-b">Sends players <span class="trade-cap">(max 6)</span></label>
+          <select id="trade-players-b" multiple size="12"></select>
+        </div>
+      </div>
+      <button type="button" class="btn" id="trade-run">Estimate wins &amp; salary match</button>
+    </div>
+    <div class="cards" id="trade-cards"></div>
+    <div class="panel">
+      <h3 class="panel-title">Contract value (2026 cap dollars)
+        <span class="panel-hint" id="trade-cap-hint"></span></h3>
+      <div class="table-scroll">
+        <table class="grid" id="trade-contract-table"><thead></thead><tbody></tbody></table>
+      </div>
+    </div>
+    <div class="panel">
+      <h3 class="panel-title">Projected standings shift
+        <span class="panel-hint">linear net-rating map + preseason sim baseline</span></h3>
+      <div class="table-scroll">
+        <table class="grid" id="trade-table"><thead></thead><tbody></tbody></table>
+      </div>
+    </div>
+  </section>
+
+  <!-- GAME ODDS -------------------------------------------------------- -->
+  <section id="view-gameodds" class="view" hidden>
+    <h2 class="page-head">Game Odds vs the Market</h2>
+    <p class="lede" id="go-lede"></p>
+    <div class="cards" id="go-cards"></div>
+    <div class="panel-row">
+      <div class="panel">
+        <h3 class="panel-title">Reliability curve
+          <span class="panel-hint">predicted vs observed home win rate</span></h3>
+        <div class="chart-box tall"><canvas id="calib-chart"></canvas></div>
+      </div>
+      <div class="panel">
+        <h3 class="panel-title">Skill by season
+          <span class="panel-hint">log-loss: BOOKER vs closing line</span></h3>
+        <div class="chart-box tall"><canvas id="go-season-chart"></canvas></div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-title-row">
+        <h3 class="panel-title">Game-by-game odds</h3>
+        <div class="ctrl grow">
+          <input id="f-go-search" type="search" placeholder="filter by team, e.g. BOS" autocomplete="off" />
+        </div>
+      </div>
+      <div class="table-scroll">
+        <table class="grid" id="go-table"><thead></thead><tbody></tbody></table>
+      </div>
+    </div>
+  </section>
+
+  <!-- STAT LEADERS ----------------------------------------------------- -->
+  <section id="view-leaders" class="view" hidden>
+    <h2 class="page-head">Stat Leaders</h2>
+    <p class="lede">Every skill as a column, color-coded by percentile vs all 500+ minute players (box rates per-32 min). Click any column header to sort; click a player for the full breakdown.</p>
+    <div class="controls">
+      <label>Season <select id="ld-season"></select></label>
+      <label>Min minutes <select id="ld-min"><option value="250">250</option><option value="500" selected>500</option><option value="1000">1000</option><option value="1500">1500</option></select></label>
+    </div>
+    <div class="table-scroll"><table class="grid leaders-table" id="ld-table"><thead></thead><tbody></tbody></table></div>
+  </section>
+
+  <!-- DIAGNOSTICS ------------------------------------------------------ -->
+  <section id="view-diagnostics" class="view" hidden>
+    <h2 class="page-head">BookerFormer — Bayesian model diagnostics</h2>
+    <p class="lede" id="diag-intro"></p>
+    <div class="breakdown-grid">
+      <div class="panel">
+        <h3 class="panel-title">Uncertainty narrows with minutes</h3>
+        <div class="chart-box"><canvas id="diag-sd-chart"></canvas></div>
+        <p class="result-note">Mean posterior SD of the offensive/defensive rating, by minutes played. More possessions &rarr; tighter credible intervals.</p>
+      </div>
+      <div class="panel">
+        <h3 class="panel-title">Out-of-sample backtest</h3>
+        <div class="table-scroll"><table class="grid" id="diag-backtest"><thead></thead><tbody></tbody></table></div>
+        <p class="result-note" id="diag-backtest-note"></p>
+      </div>
+    </div>
+    <div class="breakdown-grid">
+      <div class="panel">
+        <h3 class="panel-title">True Value model <span class="panel-hint" id="diag-tv-eq"></span></h3>
+        <div class="chart-box"><canvas id="diag-fa-chart"></canvas></div>
+        <p class="result-note">Every free-agent signing: BOOKER score the season before free agency vs the AAV they signed for (2026$). The fit (age term zeroed) is True Value.</p>
+      </div>
+      <div class="panel">
+        <h3 class="panel-title">Credible intervals — top players</h3>
+        <div class="table-scroll"><table class="grid" id="diag-intervals"><thead></thead><tbody></tbody></table></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- METHODOLOGY ------------------------------------------------------ -->
+  <section id="view-method" class="view" hidden>
+    <div class="prose" id="method-body"></div>
+  </section>
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span id="foot-note"></span>
+  </div>
+</footer>
+
+<script src="assets/chart.umd.js"></script>
+<script src="data/data.js"></script>
+<script src="assets/app.js"></script>
+</body>
+</html>

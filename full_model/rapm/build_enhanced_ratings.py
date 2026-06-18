@@ -31,6 +31,7 @@ def season_enhanced_rating(data, season):
     pl["rank"] = pl.waa_total.rank(ascending=False, method="first").astype(int)
     pl["rank_off"] = pl.waa_off.rank(ascending=False, method="first").astype(int)
     pl["rank_def"] = pl.waa_def.rank(ascending=False, method="first").astype(int)
+    pl["rank_waa32"] = pl.waa32_total.rank(ascending=False, method="first").astype(int)
     return pl
 
 
@@ -51,6 +52,7 @@ def build_all_enhanced():
     allr.round({
         "minutes": 0, "impact_off": 2, "impact_def": 2, "impact_total": 2,
         "waa_off": 2, "waa_def": 2, "waa_total": 2,
+        "waa32_off": 2, "waa32_def": 2, "waa32_total": 2,
     }).to_csv(out, index=False)
     print(f"wrote {out} ({len(allr)} rows)")
     return allr

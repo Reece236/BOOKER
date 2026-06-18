@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Virtual environments
+.venv/
+.venv_rapm/
+
+# OS
+.DS_Store
+
+# Claude agent state / worktrees (never commit nested worktrees)
+.claude/
+**/.claude/
+
+# Large, reproducible data caches (downloaded NBA PBP/shotdetail + intermediate stints).
+# ~1.8GB; regenerate via data_ingest/ + build_*_stints.py.
+full_model/rapm/cache/
+full_model/rapm/waa_handoff/data/cache/
+
+# Backups / scratch
+*.bak
+*.bak[0-9]

@@ -1,0 +1,11 @@
+# Dependencies for BOOKER data ingestion + forecasting (Python 3.10+).
+# nba_api requires Python >= 3.10; the legacy modeling venv is 3.9, so run the
+# data_ingest/ and forecast/ scripts with a 3.10+ interpreter.
+nba_api>=1.4
+pandas>=1.5
+numpy>=1.23
+scipy>=1.9
+scikit-learn>=1.1
+pyarrow>=10.0        # parquet cache for per-game play-by-play / boxscores
+pymc>=5.0
+arviz>=0.16
