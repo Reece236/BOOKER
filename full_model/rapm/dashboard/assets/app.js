@@ -407,6 +407,48 @@
   if (compsBox) compsBox.addEventListener("click", (e) => {
     const b = e.target.closest(".comp-chip"); if (b) openPlayer(+b.dataset.pid);
   });
+  // "Where he'd fit best": rank teams by STYLE COMPLEMENTARITY -- where the rotation most
+  // needs what he provides (spacing / shot creation / rim protection / perimeter D) -- plus
+  // the usage a proper role would give him. This is meaningful for every player (unlike a
+  // title-lift, which needs a positive-impact star); title-lift lives in the trade screen.
+  const AX_TO_FIT = {
+    Spacing: (ax) => ax["Shooting"],
+    "Shot creation": (ax) => (num(ax["Playmaking"]) + num(ax["Ball Dominance"])) / 2,
+    "Rim protection": (ax) => ax["Rim / Interior"],
+    "Perimeter D": (ax) => ax["Perimeter D"],
+  };
+  function renderBestFits(latest) {
+    const panel = $("#bestfit-panel"), box = $("#bestfit");
+    if (!box) return;
+    const st = latest && styleByPid()[latest.pid];
+    if (!D.trade || !D.trade.teamNet || !latest || latest.predictive || !st) { panel.hidden = true; return; }
+    const prov = {};                                   // what he provides (above-average = >0)
+    Object.keys(AX_TO_FIT).forEach((d) => { prov[d] = Math.max(0, num(AX_TO_FIT[d](st.ax)) - 50); });
+    const rows = Object.keys(D.trade.teamNet).filter((t) => t !== "FA" && t !== latest.team).map((t) => {
+      const tf = teamFit(tradeRoster(t));
+      if (!tf) return null;
+      let score = 0, best = null;
+      tf.forEach((d) => {
+        const contrib = (prov[d.name] || 0) * Math.max(0, 50 - d.val) / 100;   // he provides × they need
+        score += contrib;
+        if (!best || contrib > best.c) best = { name: d.name, c: contrib };
+      });
+      return { team: t, score, fill: best };
+    }).filter(Boolean).sort((a, b) => b.score - a.score);
+    const role = latest.role;
+    const usageNote = role
+      ? ` A proper role uses him at ~${Math.round(role.optUsage)}% (now ${Math.round(role.usage)}%${role.misuse > 1.5 ? ", currently over-used" : role.misuse < -1.5 ? ", could handle more" : ""}).`
+      : "";
+    box.innerHTML =
+      `<p class="result-note">Teams whose rotation most needs what he brings (style complementarity) — where his game fits best.${usageNote}</p>` +
+      `<div class="bf-list">` + rows.slice(0, 6).map((r, i) =>
+        `<div class="bf-row"><span class="bf-rank">${i + 1}</span>` +
+        `<span class="bf-team"><span class="team-tag">${r.team}</span> ${teamName(r.team)}</span>` +
+        `<span class="bf-fill">fills ${r.fill && r.fill.c > 1 ? r.fill.name : "depth"}</span>` +
+        `<span class="bf-delta">fit ${Math.round(r.score)}</span></div>`).join("") + `</div>`;
+    panel.hidden = false;
+  }
+
   function openPlayer(pid) {
     const seasons = D.players.filter((p) => p.pid === pid).sort((a, b) => a.season - b.season);
     if (!seasons.length) return;
@@ -415,8 +457,12 @@
     const totWaa = seasons.reduce((a, s) => a + s.waa, 0);
     const peak = seasons.reduce((a, s) => (s.waa > a.waa ? s : a));
     const peak32 = seasons.reduce((a, s) => ((s.waa32 != null ? s.waa32 : -999) > (a.waa32 != null ? a.waa32 : -999) ? s : a));
-    const bestRank = Math.min.apply(null, seasons.map((s) => s.rank));
-    const latest = seasons[seasons.length - 1];
+    const ranks = seasons.map((s) => s.rank).filter((r) => r != null && !isNaN(r));
+    const bestRank = ranks.length ? Math.min.apply(null, ranks) : null;
+    // grade banner uses the last REAL (non-projection) season -- projection rows carry
+    // only an overall grade (no off/def/rank), which showed as "undefined"/"#NaN".
+    const realSeasons = seasons.filter((s) => !s.predictive);
+    const latest = realSeasons.length ? realSeasons[realSeasons.length - 1] : seasons[seasons.length - 1];
     const gradeHero = (latest.grade != null) ?
       `<div class="grade-hero">` +
         `<div class="gh-main"><span class="gh-letter" style="color:${pctColor(latest.grade)}">${latest.gradeLetter}</span>` +
@@ -436,7 +482,7 @@
       `<div class="s"><div class="k">Total WAA</div><div class="v">${signed(totWaa, 1)}</div></div>` +
       `<div class="s"><div class="k">Peak WAA@32</div><div class="v">${peak32.waa32 != null ? signed(peak32.waa32, 1) : "\u2014"}</div></div>` +
       `<div class="s"><div class="k">Peak season</div><div class="v">${signed(peak.waa, 1)}</div></div>` +
-      `<div class="s"><div class="k">Best rank</div><div class="v">#${bestRank}</div></div></div>`;
+      `<div class="s"><div class="k">Best rank</div><div class="v">${bestRank != null ? "#" + bestRank : "—"}</div></div></div>`;
 
     // profile the most recent season with a true-skill breakdown; PBP rate skills run
     // through 2024-25, shooting through the latest season; fall back to the latest.
@@ -446,6 +492,7 @@
     renderSkillProfile(profSeason);
     setupCompare(profSeason);
     renderValueDerivation(profSeason);
+    renderBestFits(latest);
     renderSkillTrajectory(seasons);
     renderDNA(latest);
 
