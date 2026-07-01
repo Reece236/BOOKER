@@ -160,6 +160,18 @@
         html += `<div class="vderiv-line"><span>Surplus</span><b class="${surp >= 0 ? "pos" : "neg"}">${money(surp)}</b></div>`;
       }
     }
+    if (row.role) {
+      const rl = row.role;
+      const over = rl.misuse > 1.5, under = rl.misuse < -1.5;
+      const verdict = over ? "over-used — worth more in a smaller, more selective role"
+        : under ? "under-used — efficient enough to carry more"
+        : "used about right";
+      html += `<div class="vderiv-sec">Usage fit <em>(skill curve — what he'd be worth used properly)</em></div>`;
+      html += `<div class="vderiv-line"><span>Usage now → optimal</span><b>${rl.usage.toFixed(0)}% → ${rl.optUsage.toFixed(0)}%</b></div>`;
+      html += `<div class="vderiv-line"><span>TS% at that role</span><b>${(rl.tsNow * 100).toFixed(1)} → ${(rl.tsOpt * 100).toFixed(1)}</b></div>`;
+      html += `<div class="vderiv-line"><span class="${over ? "neg" : under ? "pos" : ""}">${verdict}</span>` +
+        `<b class="${rl.upside >= 0 ? "pos" : "neg"}">${signed(rl.upside, 1)}/100</b></div>`;
+    }
     $("#value-derivation").innerHTML = html;
   }
   // skill percentile trajectories across a player's seasons
@@ -604,6 +616,7 @@
     ["projWins", "Proj W", (r) => `<b>${fmt(r.projWins, 1)}</b>`],
     ["range", "Sim range (10\u201390%)", (r) => `${r.p10}\u2013${r.p90}`, true],
     ["pPlayoff", "Playoff", (r) => pctCell(r.pPlayoff)],
+    ["pChamp", "Champ", (r) => r.pChamp == null ? "\u2014" : pctCell(r.pChamp)],
     ["actualWins", "Actual W", (r) => r.actualWins == null ? "\u2014" : winCmp(r)],
   ];
   function winCmp(r) {
