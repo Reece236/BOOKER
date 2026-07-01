@@ -20,6 +20,7 @@
     <button class="tab" data-view="forecast">Win Forecast</button>
     <button class="tab" data-view="trade">Trade Machine</button>
     <button class="tab" data-view="leaders">Stat Leaders</button>
+    <button class="tab" data-view="matchups">Matchups</button>
     <button class="tab" data-view="gameodds">Game Odds</button>
     <button class="tab" data-view="diagnostics">Diagnostics</button>
     <button class="tab" data-view="method">Methodology</button>
@@ -64,7 +65,8 @@
     <div class="player-head" id="player-head"></div>
     <div class="breakdown-grid">
       <div class="panel">
-        <h3 class="panel-title">Skill profile <span class="panel-hint" id="skill-season-note"></span></h3>
+        <h3 class="panel-title">Skill profile <span class="panel-hint" id="skill-season-note"></span>
+          <select id="skill-compare" class="cmp-sel" title="Head-to-head skill comparison"><option value="">Compare with…</option></select></h3>
         <div id="skill-bars"></div>
       </div>
       <div class="panel">
@@ -223,13 +225,25 @@
 
   <!-- STAT LEADERS ----------------------------------------------------- -->
   <section id="view-leaders" class="view" hidden>
-    <h2 class="page-head">Stat Leaders</h2>
-    <p class="lede">Every skill as a column, color-coded by percentile vs all 500+ minute players (box rates per-32 min). Click any column header to sort; click a player for the full breakdown.</p>
+    <h2 class="page-head">True-Skill Leaders</h2>
+    <p class="lede">Estimated <b>true skill</b>, not raw stats: every column is difficulty- and opportunity-adjusted and empirical-Bayes shrunk toward a player's stable talent. Shooting (3P%, Rim%, eFG%) is adjusted for shot difficulty over a multi-year window; rate skills (AST/REB/STL/BLK) are per-36 talent estimates. <b>Hover any cell for the raw stat.</b> Color = percentile vs all 500+ minute players. Click a header to sort, a player for the full breakdown.</p>
     <div class="controls">
       <label>Season <select id="ld-season"></select></label>
       <label>Min minutes <select id="ld-min"><option value="250">250</option><option value="500" selected>500</option><option value="1000">1000</option><option value="1500">1500</option></select></label>
     </div>
     <div class="table-scroll"><table class="grid leaders-table" id="ld-table"><thead></thead><tbody></tbody></table></div>
+  </section>
+
+  <!-- MATCHUPS --------------------------------------------------------- -->
+  <section id="view-matchups" class="view" hidden>
+    <h2 class="page-head">Team Matchups</h2>
+    <p class="lede">A <b>scouting</b> view, not a predictor: how two teams match up across size and the granular skills (minutes-weighted team profiles from the rotation). Each row pits one team's offensive strength against the other's matching defense. <b>Matchup tendencies don't improve win-probability beyond each team's overall strength</b> (tested four ways) — this shows <i>where</i> the battlegrounds are.</p>
+    <div class="controls">
+      <label>Season <select id="mu-season"></select></label>
+      <label>Team A <select id="mu-team-a"></select></label>
+      <label>Team B <select id="mu-team-b"></select></label>
+    </div>
+    <div id="mu-body"></div>
   </section>
 
   <!-- DIAGNOSTICS ------------------------------------------------------ -->

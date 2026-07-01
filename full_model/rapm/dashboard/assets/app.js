@@ -16,6 +16,9 @@
   const teamName = (ab) => D.teamNames[ab] || ab;
   const MAX_TRADE_ASSETS = 6;
   const latest = Math.max.apply(null, D.seasons);
+  // last full (non-projection) season -- the leaderboard's default view
+  const _fullSeasons = D.players.filter((p) => !p.predictive).map((p) => p.season);
+  const lastFull = _fullSeasons.length ? Math.max.apply(null, _fullSeasons) : latest;
 
   /* ---- savant-style percentile color + skill / value rendering --------- */
   // diverging ramp: low percentile = cool blue, mid = grey, high = warm red
@@ -28,27 +31,95 @@
     else { const t = (p - 50) / 50; c = mid.map((v, i) => lerp(v, hi[i], t)); }
     return alpha == null ? `rgb(${c[0]},${c[1]},${c[2]})` : `rgba(${c[0]},${c[1]},${c[2]},${alpha})`;
   }
+  const hasSkills = (p) => !!(p && p.skills && Object.keys(p.skills).length > 0);
+  // true-skill value formatting: "pct" skills store a 0-1 rate (shown x100); others a number
+  function fmtSkillVal(s) {
+    if (s == null || s.val == null) return "—";
+    return s.fmt === "pct" ? (s.val * 100).toFixed(1) + "%" : signed(s.val, 1);
+  }
+  function fmtSkillRaw(s) {
+    if (s == null || s.raw == null) return null;
+    return s.fmt === "pct" ? (s.raw * 100).toFixed(1) + "%" : fmt(s.raw, 1);
+  }
+  function skillTitle(s) {
+    const r = fmtSkillRaw(s);
+    return `${s.pct}th pctile` + (r != null ? ` · raw ${r}` : "");
+  }
   function renderSkillProfile(row) {
     const note = $("#skill-season-note");
-    if (!row || !row.skills) {
+    if (!hasSkills(row)) {
       if (note) note.textContent = "";
-      $("#skill-bars").innerHTML = `<p class="result-note">No skill profile for this player-season (needs 500+ minutes).</p>`;
+      $("#skill-bars").innerHTML = `<p class="result-note">No true-skill profile for this player-season (needs 500+ minutes).</p>`;
       return;
     }
-    if (note) note.textContent = `${seasonLabelFull(row.season)}${row.archetype ? " · " + row.archetype : ""} · percentile vs league`;
-    const order = ["offense", "defense", "shot_making", "shot_difficulty", "self_creation",
-                   "rim_deterrence", "make_limiting",
-                   "scoring", "efficiency", "three_pct", "playmaking",
-                   "rebounding", "steals", "rim_protect", "three_volume", "usage"];
+    if (note) note.textContent = `${seasonLabelFull(row.season)}${row.archetype ? " · " + row.archetype : ""} · true-skill percentile vs league (hover a row for the raw stat)`;
+    const order = ["offense", "defense", "three_pct", "rim_finish", "efficiency", "shot_making",
+                   "free_throw", "self_creation", "off_gravity", "on_gravity", "playmaking",
+                   "creation", "foul_draw", "ball_security", "rebounding", "steals", "rim_protect",
+                   "discipline", "rim_contest", "perimeter_contest", "rim_deterrence",
+                   "make_limiting", "shot_difficulty", "usage"];
     const rows = order.filter((k) => row.skills[k]).map((k) => {
       const s = row.skills[k];
-      return `<div class="skill-row">` +
+      return `<div class="skill-row" title="${skillTitle(s)}">` +
         `<span class="skill-name">${s.label}</span>` +
         `<span class="skill-track"><span class="skill-fill" style="width:${s.pct}%;background:${pctColor(s.pct)}"></span></span>` +
+        `<span class="skill-val">${fmtSkillVal(s)}</span>` +
         `<span class="skill-pct" style="color:${pctColor(s.pct)}">${s.pct}</span>` +
         `</div>`;
     }).join("");
     $("#skill-bars").innerHTML = rows;
+  }
+  // ---- head-to-head player comparison (full true-skill profile) ----
+  const SKILL_ORDER = ["offense", "defense", "three_pct", "rim_finish", "efficiency",
+    "shot_making", "free_throw", "self_creation", "off_gravity", "on_gravity", "playmaking",
+    "creation", "foul_draw", "ball_security", "rebounding", "steals", "rim_protect",
+    "discipline", "rim_contest", "perimeter_contest", "rim_deterrence", "make_limiting",
+    "shot_difficulty", "usage"];
+  function profileSeasonFor(pid) {
+    const ss = D.players.filter((p) => p.pid === pid).sort((a, b) => a.season - b.season);
+    if (!ss.length) return null;
+    const rev = [...ss].reverse();
+    return rev.find((s) => hasSkills(s) && s.skills.playmaking) || rev.find((s) => hasSkills(s)) || ss[ss.length - 1];
+  }
+  let cmpInit = false, curProfRow = null;
+  function setupCompare(rowA) {
+    curProfRow = rowA;
+    const sel = $("#skill-compare");
+    if (!sel) return;
+    if (!cmpInit) {
+      cmpInit = true;
+      const seen = {};
+      D.players.forEach((p) => { if (!seen[p.pid]) seen[p.pid] = p.player; });
+      sel.insertAdjacentHTML("beforeend", Object.entries(seen)
+        .sort((a, b) => a[1].localeCompare(b[1]))
+        .map(([pid, nm]) => `<option value="${pid}">${nm}</option>`).join(""));
+      sel.addEventListener("change", () => {
+        const bpid = +sel.value;
+        if (!bpid || !curProfRow) { renderSkillProfile(curProfRow); return; }
+        const rowB = profileSeasonFor(bpid);
+        rowB ? renderCompareProfile(curProfRow, rowB) : renderSkillProfile(curProfRow);
+      });
+    }
+    sel.value = "";
+  }
+  function renderCompareProfile(a, b) {
+    const note = $("#skill-season-note");
+    if (note) note.textContent = `${a.player} (${seasonLabel(a.season)}) vs ${b.player} (${seasonLabel(b.season)}) · true-skill, winner bold`;
+    const gradeRow = (a.grade != null && b.grade != null) ?
+      `<div class="cmp-row cmp-grade"><span class="cmp-a ${a.grade >= b.grade ? "win" : ""}">${a.gradeLetter} ${a.grade}</span>` +
+      `<span class="cmp-lab">GRADE</span><span class="cmp-b ${b.grade >= a.grade ? "win" : ""}">${b.gradeLetter} ${b.grade}</span></div>` : "";
+    const rows = SKILL_ORDER.filter((k) => (a.skills && a.skills[k]) || (b.skills && b.skills[k])).map((k) => {
+      const sa = a.skills && a.skills[k], sb = b.skills && b.skills[k];
+      const lab = (sa || sb).label;
+      const pa = sa ? sa.pct : -1, pb = sb ? sb.pct : -1;
+      const aw = sa && sb && pa >= pb, bw = sa && sb && pb >= pa;
+      return `<div class="cmp-row">` +
+        `<span class="cmp-a ${aw ? "win" : ""}" style="color:${sa ? pctColor(pa) : "#bbb"}" title="${sa ? skillTitle(sa) : "—"}">${sa ? fmtSkillVal(sa) : "—"}</span>` +
+        `<span class="cmp-lab">${lab}</span>` +
+        `<span class="cmp-b ${bw ? "win" : ""}" style="color:${sb ? pctColor(pb) : "#bbb"}" title="${sb ? skillTitle(sb) : "—"}">${sb ? fmtSkillVal(sb) : "—"}</span></div>`;
+    }).join("");
+    $("#skill-bars").innerHTML =
+      `<div class="cmp-head"><span>${a.player}</span><span></span><span>${b.player}</span></div>` + gradeRow + rows;
   }
   function vbar(label, val, max, color, fmtFn) {
     const w = Math.max(0, Math.min(100, (Math.abs(val) / max) * 100));
@@ -85,11 +156,11 @@
   }
   // skill percentile trajectories across a player's seasons
   const TRAJ_KEYS = [["offense", "Offense", "#7a2820"], ["defense", "Defense", "#2f5d34"],
-    ["scoring", "Scoring", "#241c12"], ["efficiency", "Efficiency", "#b8860b"],
-    ["three_pct", "3PT%", "#4a6fa5"], ["playmaking", "Playmaking", "#8a5a44"]];
+    ["shot_making", "Shot-Making", "#241c12"], ["efficiency", "True eFG%", "#b8860b"],
+    ["three_pct", "True 3P%", "#4a6fa5"], ["playmaking", "Playmaking", "#8a5a44"]];
   function renderSkillTrajectory(seasons) {
     destroy("skilltraj");
-    const ws = seasons.filter((s) => s.skills && s.skills.scoring);
+    const ws = seasons.filter((s) => hasSkills(s));
     const panel = $("#skill-traj-panel");
     if (ws.length < 2) { if (panel) panel.style.display = "none"; return; }
     if (panel) panel.style.display = "";
@@ -130,6 +201,7 @@
     if (v === "trade") renderTrade();
     if (v === "gameodds") renderGameOdds();
     if (v === "leaders") renderLeaders();
+    if (v === "matchups") renderMatchup();
     if (v === "diagnostics") renderDiagnostics();
     if (v === "method") renderMethod();
   });
@@ -143,8 +215,8 @@
     { key: "player", label: "Player", text: true, cell: (r) => `<span class="namecell">${r.player}</span>` },
     { key: "team", label: "Team", text: true, cell: (r) => `<span class="team-tag">${r.team}</span>` },
     { key: "season", label: "Season", cell: (r) => seasonLabel(r.season) },
-    { key: "grade2027", label: "2027", text: true,
-      cell: (r) => r.grade2027 ? `<span class="grade grade-${r.grade2027.replace("+","p").replace("-","m")}">${r.grade2027}</span>` : "\u2014" },
+    { key: "grade", label: "Grade", text: true,
+      cell: (r) => r.grade != null ? `<span class="grade grade-${(r.gradeLetter||"").replace("+","p").replace("-","m")}" title="sticky age-curved team-independent grade">${r.gradeLetter} <small>${r.grade}</small></span>` : "\u2014" },
     { key: "min", label: "Min", cell: (r) => r.min.toLocaleString() },
     { key: "bookerScore", label: "BOOKER", cell: (r) => r.bookerScore != null
       ? `<span class="${r.bookerScore >= 0 ? "pos" : "neg"}" title="BOOKER score: forward-looking predictive WAA per 3000 possessions (pure skill, no aging).">${signed(r.bookerScore, 1)}</span>`
@@ -154,6 +226,12 @@
       ? `<span class="${r.waaOff >= 0 ? "pos" : "neg"}" title="Offensive WAA">${signed(r.waaOff, 1)}</span>` : "\u2014" },
     { key: "waaDef", label: "Def", cell: (r) => r.waaDef != null
       ? `<span class="${r.waaDef >= 0 ? "pos" : "neg"}" title="Defensive WAA">${signed(r.waaDef, 1)}</span>` : "\u2014" },
+    { key: "real_pm", label: "Real +/-", cell: (r) => r.real_pm != null
+      ? `<span class="${r.real_pm >= 0 ? "pos" : "neg"}" title="Actual on-court net rating /100 possessions (descriptive; for isolated impact use BOOKER)">${signed(r.real_pm, 1)}</span>` : "\u2014" },
+    { key: "tm_quality", label: "Tm Q", cell: (r) => r.tm_quality != null
+      ? `<span title="Avg teammate rating on court with him (impact/100) -- supporting cast">${signed(r.tm_quality, 1)}</span>` : "\u2014" },
+    { key: "opp_quality", label: "Opp Q", cell: (r) => r.opp_quality != null
+      ? `<span title="Avg opponent rating on court against him (impact/100) -- competition faced">${signed(r.opp_quality, 1)}</span>` : "\u2014" },
     { key: "waaEnhanced", label: "Enh WAA", cell: (r) => r.waaEnhanced != null
       ? `<span class="${r.waaEnhanced >= 0 ? "pos" : "neg"}" title="Prior teammate-fit ridge model (enhanced), shown for comparison. Click to sort and compare orderings.">${signed(r.waaEnhanced, 1)}</span>`
       : "\u2014" },
@@ -182,7 +260,7 @@
     return `<span title="BookerFormer Bayesian offense / defense rating per 100 possessions, with 95% credible interval. Intervals narrow as a player logs more minutes.">` +
            `${ci(r.bfOff100, r.sdOff)} / ${ci(r.bfDef100, r.sdDef)}</span>`;
   }
-  const lbSort = { key: "waaModel", dir: -1 };
+  const lbSort = { key: "bookerScore", dir: -1 };
 
   function lbFilter() {
     const season = $("#f-season").value;
@@ -190,9 +268,12 @@
     const q = $("#f-search").value.trim().toLowerCase();
     const mn = +$("#f-minutes").value;
     let rows = D.players.filter((p) => p.min >= mn);
+    // season filter always applies (search is scoped to the selected season; pick
+    // "All seasons" to search across every year). Team is optional, so search still
+    // works with no team selected.
     if (season !== "all") rows = rows.filter((p) => p.season === +season);
     if (team) rows = rows.filter((p) => p.team === team);
-    if (q) rows = rows.filter((p) => p.player.toLowerCase().includes(q));
+    if (q) rows = rows.filter((p) => (p.player || "").toLowerCase().includes(q));
     rows.sort((a, b) => {
       let A = a[lbSort.key], B = b[lbSort.key];
       if (lbSort.key === "waaModel") {
@@ -222,8 +303,8 @@
     $("#lb-note").textContent =
       `${rows.length.toLocaleString()} player-seasons` +
       (rows.length > 400 ? " (showing top 400)" : "") +
-      ` \u00b7 ranked by BookerFormer WAA (Bayesian RAPM); Enh WAA = prior ridge model` +
-      ` \u00b7 BOOKER = predictive WAA / 3000 poss (skill, no aging)` +
+      ` \u00b7 ranked by BOOKER (predictive WAA / 3000 poss, skill); WAA = hybrid skills+impact` +
+      ` \u00b7 search is scoped to the selected season (choose \u201cAll seasons\u201d to search every year)` +
       ` \u00b7 True Value = skill-based AAV from BOOKER, age penalty removed; surplus = True Value \u2212 contract`;
   }
   $("#lb-table thead").addEventListener("click", (e) => {
@@ -232,7 +313,7 @@
     if (lbSort.key === k) lbSort.dir *= -1;
     else {
       lbSort.key = k;
-      lbSort.dir = (k === "player" || k === "team" || k === "modelType" || k === "grade2027") ? 1 : -1;
+      lbSort.dir = (k === "player" || k === "team" || k === "modelType") ? 1 : -1;
     }
     renderLB();
   });
@@ -249,7 +330,7 @@
   function initFilters() {
     $("#f-season").innerHTML = `<option value="all">All seasons</option>` +
       D.seasons.slice().reverse().map((s) => `<option value="${s}">${seasonLabel(s)}</option>`).join("");
-    $("#f-season").value = String(latest);
+    $("#f-season").value = String(lastFull);
     const teams = Array.from(new Set(D.players.map((p) => p.team))).sort();
     $("#f-team").innerHTML = `<option value="">All teams</option>` +
       teams.map((t) => `<option value="${t}">${t} \u2014 ${teamName(t)}</option>`).join("");
@@ -268,22 +349,34 @@
     const peak = seasons.reduce((a, s) => (s.waa > a.waa ? s : a));
     const peak32 = seasons.reduce((a, s) => ((s.waa32 != null ? s.waa32 : -999) > (a.waa32 != null ? a.waa32 : -999) ? s : a));
     const bestRank = Math.min.apply(null, seasons.map((s) => s.rank));
+    const latest = seasons[seasons.length - 1];
+    const gradeHero = (latest.grade != null) ?
+      `<div class="grade-hero">` +
+        `<div class="gh-main"><span class="gh-letter" style="color:${pctColor(latest.grade)}">${latest.gradeLetter}</span>` +
+        `<span class="gh-num">${latest.grade}</span><span class="gh-cap">GRADE \u00b7 ${seasonLabel(latest.season)}</span></div>` +
+        `<div class="gh-od"><span class="gh-od-i">Off <b style="color:${pctColor(latest.gradeOff)}">${latest.gradeOff}</b></span>` +
+        `<span class="gh-od-i">Def <b style="color:${pctColor(latest.gradeDef)}">${latest.gradeDef}</b></span></div>` +
+        (latest.gradeProj ? `<div class="gh-proj"><span class="gh-cap">3-YR OUTLOOK</span> ` +
+          latest.gradeProj.map((p) => `<span class="gh-pj" title="age ${p.age}">${p.letter}<small>${p.grade}</small></span>`).join("<span class='gh-arr'>\u2192</span>") + `</div>` : "") +
+      `</div>` : "";
     $("#player-head").innerHTML =
       `<h2>${name}</h2>` +
       `<span class="ph-meta">${teams.join(", ")} \u00b7 ${seasons.length} season${seasons.length > 1 ? "s" : ""}` +
       ` \u00b7 ${seasonLabel(seasons[0].season)}\u2013${seasonLabel(seasons[seasons.length - 1].season)}</span>` +
+      gradeHero +
       `<div class="ph-stat">` +
       `<div class="s"><div class="k">Total WAA</div><div class="v">${signed(totWaa, 1)}</div></div>` +
       `<div class="s"><div class="k">Peak WAA@32</div><div class="v">${peak32.waa32 != null ? signed(peak32.waa32, 1) : "\u2014"}</div></div>` +
       `<div class="s"><div class="k">Peak season</div><div class="v">${signed(peak.waa, 1)}</div></div>` +
       `<div class="s"><div class="k">Best rank</div><div class="v">#${bestRank}</div></div></div>`;
 
-    // profile the most recent season with a FULL skill breakdown (box stats run
-    // through 2024-25); fall back to any season with skills, then the latest.
+    // profile the most recent season with a true-skill breakdown; PBP rate skills run
+    // through 2024-25, shooting through the latest season; fall back to the latest.
     const rev = [...seasons].reverse();
-    const profSeason = rev.find((s) => s.skills && s.skills.scoring) ||
-                       rev.find((s) => s.skills) || seasons[seasons.length - 1];
+    const profSeason = rev.find((s) => hasSkills(s) && s.skills.playmaking) ||
+                       rev.find((s) => hasSkills(s)) || seasons[seasons.length - 1];
     renderSkillProfile(profSeason);
+    setupCompare(profSeason);
     renderValueDerivation(profSeason);
     renderSkillTrajectory(seasons);
 
@@ -291,12 +384,19 @@
       ["season", "Season", (r) => seasonLabel(r.season), true],
       ["team", "Team", (r) => `<span class="team-tag">${r.team}</span>`, true],
       ["rankModel", "Rank", (r) => "#" + (r.rankModel != null ? r.rankModel : r.rank)],
-      ["grade2027", "2027 grade", (r) => r.grade2027 || "\u2014", true],
+      ["grade", "Grade", (r) => r.grade != null
+        ? `<span title="Sticky, age-curved, team-independent grade">${r.gradeLetter} <small>${r.grade}</small></span>` : "\u2014", true],
       ["min", "Min", (r) => r.min.toLocaleString()],
       ["bookerScore", "BOOKER", (r) => r.bookerScore != null
         ? `<span class="${r.bookerScore >= 0 ? "pos" : "neg"}" title="Predictive WAA per 3000 possessions (skill, no aging)">${signed(r.bookerScore, 1)}</span>` : "\u2014"],
       ["waaOff", "Off WAA", (r) => r.waaOff != null ? signed(r.waaOff, 1) : "\u2014"],
       ["waaDef", "Def WAA", (r) => r.waaDef != null ? signed(r.waaDef, 1) : "\u2014"],
+      ["real_pm", "Real +/-", (r) => r.real_pm != null
+        ? `<span class="${r.real_pm >= 0 ? "pos" : "neg"}" title="Actual on-court net rating per 100 possessions (descriptive; for isolated impact use BOOKER)">${signed(r.real_pm, 1)}</span>` : "\u2014"],
+      ["tm_quality", "Tm Q", (r) => r.tm_quality != null
+        ? `<span title="Avg teammate rating on court with him (impact/100) -- supporting cast">${signed(r.tm_quality, 1)}</span>` : "\u2014"],
+      ["opp_quality", "Opp Q", (r) => r.opp_quality != null
+        ? `<span title="Avg opponent rating on court against him (impact/100) -- competition faced">${signed(r.opp_quality, 1)}</span>` : "\u2014"],
       ["waaModel", "WAA", (r) => `<span class="${(r.waaModel != null ? r.waaModel : r.waa) >= 0 ? "pos" : "neg"}">${signed(r.waaModel != null ? r.waaModel : r.waa, 1)}</span>`],
       ["waa32", "WAA@32", (r) => r.waa32 != null
         ? `<span class="${r.waa32 >= 0 ? "pos" : "neg"}" title="Bayesian predictive WAA at 32 mpg (82 games); low-minute seasons shrink toward prior">${signed(r.waa32, 1)}</span>`
@@ -838,6 +938,34 @@
       [`${tb} salary`, `${money(salOutB.reduce((a, b) => a + b, 0))} out`, `<span class="${matchB.ok ? "salary-ok" : "salary-bad"}">${matchB.note}</span>`],
     ].map((c) => `<div class="card"><div class="k">${c[0]}</div><div class="v">${c[1]}</div><div class="d">${c[2]}</div></div>`).join("");
 
+    // --- trade impact breakdown: skill profile, timeline (age), depth (minutes) ---
+    const sideAgg = (list) => {
+      const mn = list.reduce((a, p) => a + p.minutes, 0);
+      const w = (f) => mn ? list.reduce((a, p) => a + (f(p) || 0) * p.minutes, 0) / mn : null;
+      return { n: list.length, min: mn, off: w((p) => p.gradeOff), def: w((p) => p.gradeDef), age: w((p) => p.age) };
+    };
+    const dCell = (ov, nv, dec, invert) => {
+      if (ov == null && nv == null) return "—";
+      const d = (nv || 0) - (ov || 0);
+      const cls = (invert ? -d : d) >= 0 ? "pos" : "neg";
+      return `${ov == null ? "—" : ov.toFixed(dec)} → ${nv == null ? "—" : nv.toFixed(dec)} <span class="${cls}">(${d >= 0 ? "+" : ""}${d.toFixed(dec)})</span>`;
+    };
+    const impactRow = (team, out, inc) => {
+      const o = sideAgg(out), i = sideAgg(inc);
+      return `<div class="ti-team"><div class="ti-name"><span class="team-tag">${team}</span> sends ${out.length}, gets ${inc.length}</div>` +
+        `<div class="ti-grid">` +
+        `<div><span class="ti-k">Offense skill</span>${dCell(o.off, i.off, 0)}</div>` +
+        `<div><span class="ti-k">Defense skill</span>${dCell(o.def, i.def, 0)}</div>` +
+        `<div><span class="ti-k">Avg age</span>${dCell(o.age, i.age, 1, true)}</div>` +
+        `<div><span class="ti-k">Rotation min in/out</span>${dCell(o.min, i.min, 0)}</div>` +
+        `</div></div>`;
+    };
+    let imp = document.getElementById("trade-impact");
+    if (!imp) { imp = document.createElement("div"); imp.id = "trade-impact"; imp.className = "panel"; $("#trade-cards").insertAdjacentElement("afterend", imp); }
+    imp.innerHTML = `<h3 class="panel-title">Trade impact — skill, timeline & depth</h3>` +
+      `<p class="result-note">Minutes-weighted grade of pieces leaving vs arriving (skill-profile change), average age (timeline fit), and rotation minutes (depth). Higher off/def grade is better; younger is greener.</p>` +
+      impactRow(ta, outA, inA) + impactRow(tb, outB, inB);
+
     const namesA = outA.map((p) => p.player).join(", ") || "(none)";
     const namesB = outB.map((p) => p.player).join(", ") || "(none)";
     $("#trade-lede").textContent =
@@ -888,29 +1016,38 @@
   /* ===================================================================== *
    *  STAT LEADERS
    * ===================================================================== */
-  // skill columns for the one-table leaders board (key, short header, value formatter)
+  // one-table true-skill leaders board (key, short header). Values + hover-raw are
+  // formatted from each skill's stored `fmt` via fmtSkillVal / skillTitle.
   const LEADER_COLS = [
-    ["bookerScore", "BOOKER", (v) => signed(v, 1)],
-    ["offense", "Off", (v) => signed(v, 1)],
-    ["defense", "Def", (v) => signed(v, 1)],
-    ["shot_making", "ShotMake", (v) => signed(v, 1)],
-    ["self_creation", "SelfCr", (v) => (v * 100).toFixed(0) + "%"],
-    ["scoring", "Score", (v) => fmt(v, 1)],
-    ["efficiency", "TS%", (v) => (v * 100).toFixed(1)],
-    ["three_pct", "3P%", (v) => (v * 100).toFixed(1)],
-    ["three_volume", "3PA", (v) => fmt(v, 1)],
-    ["playmaking", "AST", (v) => fmt(v, 1)],
-    ["rebounding", "REB", (v) => fmt(v, 1)],
-    ["steals", "STL", (v) => fmt(v, 1)],
-    ["rim_protect", "BLK", (v) => fmt(v, 1)],
-    ["usage", "USG", (v) => fmt(v, 1)],
+    ["grade", "Grade"],
+    ["bookerScore", "BOOKER"],
+    ["offense", "Off"],
+    ["defense", "Def"],
+    ["three_pct", "3P%"],
+    ["rim_finish", "Rim%"],
+    ["efficiency", "eFG%"],
+    ["shot_making", "ShotMk"],
+    ["self_creation", "SelfCr"],
+    ["playmaking", "AST"],
+    ["creation", "Creat"],
+    ["foul_draw", "FTDraw"],
+    ["free_throw", "FT%"],
+    ["ball_security", "BallSec"],
+    ["off_gravity", "OffGrav"],
+    ["on_gravity", "OnGrav"],
+    ["rebounding", "REB"],
+    ["steals", "STL"],
+    ["rim_protect", "BLK"],
+    ["discipline", "Disc"],
+    ["rim_contest", "RimCon"],
+    ["perimeter_contest", "PerimCon"],
   ];
   let leadersInit = false;
-  const ldSort = { key: "bookerScore", dir: -1 };
+  const ldSort = { key: "grade", dir: -1 };
   function renderLeaders() {
     if (!leadersInit) {
       leadersInit = true;
-      const seasons = Array.from(new Set(D.players.filter((p) => p.skills && p.skills.scoring)
+      const seasons = Array.from(new Set(D.players.filter((p) => hasSkills(p))
         .map((p) => p.season))).sort((a, b) => b - a);
       $("#ld-season").innerHTML = seasons.map((s) => `<option value="${s}">${seasonLabelFull(s)}</option>`).join("");
       $("#ld-season").addEventListener("change", drawLeaders);
@@ -925,6 +1062,7 @@
     drawLeaders();
   }
   function ldVal(p, key) {
+    if (key === "grade") return p.grade;
     if (key === "bookerScore") return p.bookerScore;
     if (key === "min") return p.min;
     if (key === "player") return p.player;
@@ -932,7 +1070,7 @@
   }
   function drawLeaders() {
     const season = +$("#ld-season").value, mn = +$("#ld-min").value;
-    const pool = D.players.filter((p) => p.season === season && p.skills && p.skills.scoring && p.min >= mn);
+    const pool = D.players.filter((p) => p.season === season && hasSkills(p) && p.min >= mn);
     pool.sort((a, b) => {
       const A = ldVal(a, ldSort.key), B = ldVal(b, ldSort.key);
       if (A == null) return 1; if (B == null) return -1;
@@ -945,13 +1083,18 @@
       `<th data-key="min">Min${arrow("min")}</th>` +
       LEADER_COLS.map(([k, sh]) => `<th data-key="${k}" title="${k}">${sh}${arrow(k)}</th>`).join("") + "</tr>";
     $("#ld-table tbody").innerHTML = pool.slice(0, 200).map((p, i) => {
-      const cells = LEADER_COLS.map(([k, , f]) => {
+      const cells = LEADER_COLS.map(([k]) => {
+        if (k === "grade") {
+          return p.grade != null
+            ? `<td style="background:${pctColor(p.grade, 0.5)}" title="sticky age-curved team-independent grade"><b>${p.gradeLetter}</b> <small>${p.grade}</small></td>`
+            : "<td>—</td>";
+        }
         if (k === "bookerScore") {
-          return p.bookerScore != null ? `<td><b>${f(p.bookerScore)}</b></td>` : "<td>—</td>";
+          return p.bookerScore != null ? `<td><b>${signed(p.bookerScore, 1)}</b></td>` : "<td>—</td>";
         }
         const s = p.skills[k];
         if (!s) return "<td>—</td>";
-        return `<td style="background:${pctColor(s.pct, 0.5)}" title="${s.pct} pctile">${f(s.val)}</td>`;
+        return `<td style="background:${pctColor(s.pct, 0.5)}" title="${skillTitle(s)}">${fmtSkillVal(s)}</td>`;
       }).join("");
       return `<tr class="clickable" data-pid="${p.pid}" data-season="${p.season}">` +
         `<td>${i + 1}</td><td class="col-text">${p.player}</td>` +
@@ -959,6 +1102,85 @@
     }).join("");
     $$("#ld-table tbody tr.clickable").forEach((tr) =>
       tr.addEventListener("click", () => openPlayer(+tr.dataset.pid)));
+  }
+
+  /* ===================================================================== *
+   *  MATCHUPS  (descriptive scouting view; not a win-prob predictor)
+   * ===================================================================== */
+  let muInit = false;
+  const muSeasons = () => Array.from(new Set(D.players.filter(hasSkills).map((p) => p.season))).sort((a, b) => b - a);
+  const muTeams = (s) => Array.from(new Set(D.players.filter((p) => p.season === s && hasSkills(p)).map((p) => p.team)))
+    .filter((t) => t && t !== "?").sort();
+  function teamProfile(season, team) {
+    const roster = D.players.filter((p) => p.season === season && p.team === team && p.min >= 200 && hasSkills(p));
+    if (!roster.length) return null;
+    const wpct = {}, keys = new Set();
+    roster.forEach((p) => Object.keys(p.skills).forEach((k) => keys.add(k)));
+    keys.forEach((k) => {
+      let num = 0, den = 0;
+      roster.forEach((p) => { const s = p.skills[k]; if (s) { num += s.pct * p.min; den += p.min; } });
+      if (den) wpct[k] = num / den;
+    });
+    const wh = (list) => { const t = list.reduce((a, p) => a + p.min, 0); return t ? list.reduce((a, p) => a + (p.heightIn || 0) * p.min, 0) / t : null; };
+    const byH = roster.filter((p) => p.heightIn).sort((a, b) => b.heightIn - a.heightIn);
+    const n = Math.max(3, Math.round(byH.length * 0.4));
+    let gn = 0, gd = 0;
+    roster.forEach((p) => { if (p.grade != null) { gn += p.grade * p.min; gd += p.min; } });
+    return { wpct, front: wh(byH.slice(0, n)), back: wh(byH.slice(-n)), grade: gd ? gn / gd : null };
+  }
+  const avgKeys = (prof, ks) => { const v = ks.map((k) => prof.wpct[k]).filter((x) => x != null); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null; };
+  const ftIn = (inch) => inch == null ? "—" : `${Math.floor(inch / 12)}'${Math.round(inch % 12)}"`;
+  const muPct = (v) => v == null ? "—" : `<span class="mu-pct" style="color:${pctColor(v)}">${Math.round(v)}</span>`;
+  function muSection(title, sub, rows) {
+    let h = `<div class="mu-sec">${title}<small>${sub}</small></div>`;
+    rows.forEach(([lab, lv, rv, f]) => {
+      const fmt = f || muPct, lWin = lv != null && rv != null && lv >= rv, rWin = lv != null && rv != null && rv > lv;
+      h += `<div class="mu-row"><span class="mu-a ${lWin ? "mu-win" : ""}">${fmt(lv)}</span>` +
+        `<span class="mu-lab">${lab}</span><span class="mu-b ${rWin ? "mu-win" : ""}">${fmt(rv)}</span></div>`;
+    });
+    return h;
+  }
+  function renderMatchup() {
+    const seasons = muSeasons();
+    if (!seasons.length) { $("#mu-body").innerHTML = "<p class='result-note'>No skill data available.</p>"; return; }
+    if (!muInit) {
+      muInit = true;
+      $("#mu-season").innerHTML = seasons.map((s) => `<option value="${s}">${seasonLabelFull(s)}</option>`).join("");
+      $("#mu-season").addEventListener("change", () => { fillMuTeams(); drawMatchup(); });
+      $("#mu-team-a").addEventListener("change", drawMatchup);
+      $("#mu-team-b").addEventListener("change", drawMatchup);
+      fillMuTeams();
+    }
+    drawMatchup();
+  }
+  function fillMuTeams() {
+    const teams = muTeams(+$("#mu-season").value), a = $("#mu-team-a"), b = $("#mu-team-b");
+    const opt = teams.map((t) => `<option value="${t}">${t} — ${teamName(t)}</option>`).join("");
+    a.innerHTML = opt; b.innerHTML = opt;
+    a.value = teams.includes("OKC") ? "OKC" : teams[0];
+    b.value = teams.includes("SAS") ? "SAS" : (teams[1] || teams[0]);
+  }
+  function drawMatchup() {
+    const s = +$("#mu-season").value, ta = $("#mu-team-a").value, tb = $("#mu-team-b").value;
+    const A = teamProfile(s, ta), B = teamProfile(s, tb);
+    if (!A || !B) { $("#mu-body").innerHTML = "<p class='result-note'>Pick two teams with rotation data.</p>"; return; }
+    const RIM_ATT = ["rim_finish", "on_gravity"], RIM_PROT = ["rim_protect", "rim_contest"],
+      SHOOT = ["three_pct", "off_gravity"], PERIM_D = ["perimeter_contest", "steals"], CREATE = ["playmaking", "creation"];
+    let h = `<div class="mu-head"><div class="mu-t">${ta}<small>${teamName(ta)}</small>` +
+      `<b style="color:${pctColor(A.grade)}">${A.grade != null ? Math.round(A.grade) : "—"}</b><em>team grade</em></div>` +
+      `<div class="mu-vs">vs</div><div class="mu-t">${tb}<small>${teamName(tb)}</small>` +
+      `<b style="color:${pctColor(B.grade)}">${B.grade != null ? Math.round(B.grade) : "—"}</b><em>team grade</em></div></div>`;
+    h += muSection("Size", `${ta} — ${tb} · minutes-weighted rotation height`, [
+      ["Frontcourt height", A.front, B.front, ftIn], ["Backcourt height", A.back, B.back, ftIn]]);
+    h += muSection(`When ${ta} attacks`, `${ta} offense — ${tb} defense · percentile vs league`, [
+      ["Rim", avgKeys(A, RIM_ATT), avgKeys(B, RIM_PROT)],
+      ["Outside shooting", avgKeys(A, SHOOT), avgKeys(B, PERIM_D)],
+      ["Playmaking / creation", avgKeys(A, CREATE), avgKeys(B, PERIM_D)]]);
+    h += muSection(`When ${tb} attacks`, `${ta} defense — ${tb} offense · percentile vs league`, [
+      ["Rim", avgKeys(A, RIM_PROT), avgKeys(B, RIM_ATT)],
+      ["Outside shooting", avgKeys(A, PERIM_D), avgKeys(B, SHOOT)],
+      ["Playmaking / creation", avgKeys(A, PERIM_D), avgKeys(B, CREATE)]]);
+    $("#mu-body").innerHTML = h;
   }
 
   /* ===================================================================== *
