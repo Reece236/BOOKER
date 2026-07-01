@@ -19,6 +19,7 @@
     <button class="tab is-active" data-view="leaderboard">Leaderboard</button>
     <button class="tab" data-view="forecast">Win Forecast</button>
     <button class="tab" data-view="trade">Trade Machine</button>
+    <button class="tab" data-view="lineup">Lineup Lab</button>
     <button class="tab" data-view="leaders">Stat Leaders</button>
     <button class="tab" data-view="matchups">Matchups</button>
     <button class="tab" data-view="gameodds">Game Odds</button>
@@ -220,6 +221,24 @@
       <div class="table-scroll">
         <table class="grid" id="go-table"><thead></thead><tbody></tbody></table>
       </div>
+    </div>
+  </section>
+
+  <!-- LINEUP LAB ------------------------------------------------------- -->
+  <section id="view-lineup" class="view" hidden>
+    <h2 class="page-head">Lineup Lab</h2>
+    <p class="lede" id="ll-lede"></p>
+    <div class="controls">
+      <div class="ctrl"><label for="ll-team">Team</label><select id="ll-team"></select></div>
+      <div class="ctrl grow"><label for="ll-add">Add any player (what-if)</label>
+        <input id="ll-add" list="ll-datalist" type="search" placeholder="type a name…" autocomplete="off" />
+        <datalist id="ll-datalist"></datalist></div>
+      <div class="ctrl"><label>&nbsp;</label><button type="button" class="btn" id="ll-reset">Reset to actual</button></div>
+    </div>
+    <div class="panel-row">
+      <div class="panel"><h3 class="panel-title">Rotation <span class="panel-hint">set each player's minutes; 0 benches him</span></h3>
+        <div id="ll-roster"></div></div>
+      <div class="panel"><h3 class="panel-title">Projection</h3><div id="ll-out"></div></div>
     </div>
   </section>
 

@@ -219,6 +219,7 @@
     showView(v);
     if (v === "forecast") renderForecast();
     if (v === "trade") renderTrade();
+    if (v === "lineup") renderLineup();
     if (v === "gameodds") renderGameOdds();
     if (v === "leaders") renderLeaders();
     if (v === "matchups") renderMatchup();
@@ -1073,6 +1074,88 @@
     _faPool = Object.values(best).filter((f) => f.season >= lastFull - 1)
       .sort((a, b) => b.impactTotal - a.impactTotal);
     return _faPool;
+  }
+
+  // ---- Lineup Lab: build a rotation, get projected net -> wins + title odds ----
+  let LL = null, llReady = false;
+  function llAllPlayers() {
+    const m = {};
+    (D.trade.players || []).forEach((p) => { m[p.pid] = { pid: p.pid, player: p.player, impactTotal: p.impactTotal }; });
+    faPool().forEach((p) => { if (!m[p.pid]) m[p.pid] = { pid: p.pid, player: p.player, impactTotal: p.impactTotal }; });
+    return m;
+  }
+  function renderLineup() {
+    if (!D.trade || !D.trade.teamNet) { $("#ll-lede").textContent = "Lineup data unavailable."; return; }
+    $("#ll-lede").textContent = `${seasonLabel(D.trade.season)} · build a rotation and see projected wins & championship odds. Add any player (or a free agent) for what-ifs.`;
+    const teams = Object.keys(D.trade.teamNet).sort();
+    const sel = $("#ll-team");
+    if (!llReady) {
+      sel.innerHTML = teams.map((t) => `<option value="${t}">${t} — ${teamName(t)}</option>`).join("");
+      sel.value = teams.includes("OKC") ? "OKC" : teams[0];
+      sel.addEventListener("change", () => llLoadTeam(sel.value));
+      $("#ll-reset").addEventListener("click", () => llLoadTeam(sel.value));
+      const all = llAllPlayers();
+      $("#ll-datalist").innerHTML = Object.values(all).map((p) => `<option value="${p.player}"></option>`).join("");
+      $("#ll-add").addEventListener("change", () => {
+        const nm = $("#ll-add").value.trim().toLowerCase();
+        const hit = Object.values(all).find((p) => p.player.toLowerCase() === nm);
+        if (hit && LL && !LL.roster.some((r) => r.pid === hit.pid)) {
+          LL.roster.push({ pid: hit.pid, player: hit.player, impactTotal: hit.impactTotal, minutes: 1500 });
+          $("#ll-add").value = ""; llRenderRoster(); llRecompute();
+        }
+      });
+      $("#ll-roster").addEventListener("input", (e) => {
+        const inp = e.target.closest("input[data-pid]"); if (!inp || !LL) return;
+        const r = LL.roster.find((x) => x.pid === +inp.dataset.pid);
+        if (r) { r.minutes = Math.max(0, +inp.value || 0); llRecompute(); }
+      });
+      $("#ll-roster").addEventListener("click", (e) => {
+        const b = e.target.closest("button[data-pid]"); if (!b || !LL) return;
+        LL.roster = LL.roster.filter((x) => x.pid !== +b.dataset.pid);
+        llRenderRoster(); llRecompute();
+      });
+      llReady = true;
+    }
+    llLoadTeam(sel.value);
+  }
+  function llLoadTeam(team) {
+    LL = { team, roster: tradeRoster(team).filter((p) => p.minutes > 0)
+      .map((p) => ({ pid: p.pid, player: p.player, impactTotal: p.impactTotal, minutes: Math.round(p.minutes) })) };
+    llRenderRoster(); llRecompute();
+  }
+  function llRenderRoster() {
+    const tot = LL.roster.reduce((a, r) => a + r.minutes, 0);
+    $("#ll-roster").innerHTML = `<div class="ll-tot">${tot.toLocaleString()} total min · ${LL.roster.length} players</div>`
+      + LL.roster.slice().sort((a, b) => b.minutes - a.minutes).map((r) =>
+        `<div class="ll-row"><span class="ll-name">${r.player}</span>`
+        + `<span class="ll-imp ${r.impactTotal >= 0 ? "pos" : "neg"}" title="impact / 100 poss">${signed(r.impactTotal, 1)}</span>`
+        + `<input type="number" min="0" step="50" value="${r.minutes}" data-pid="${r.pid}" class="ll-min" />`
+        + `<button data-pid="${r.pid}" class="ll-x" title="remove">✕</button></div>`).join("");
+  }
+  function llRecompute() {
+    const rost = LL.roster.filter((r) => r.minutes > 0);
+    const tot = rost.reduce((a, r) => a + r.minutes, 0);
+    const out = $("#ll-out");
+    if (tot <= 0 || rost.length < 5) { out.innerHTML = `<p class="result-note">Add at least 5 players with minutes.</p>`; return; }
+    const net = rost.reduce((a, r) => a + r.impactTotal * (r.minutes / (tot / 5)), 0);
+    const wins = Math.max(5, Math.min(82, D.trade.k * net + D.trade.c));
+    const champ = champAfter(LL.team, net);
+    const bNet = D.trade.teamNet[LL.team];
+    const bWins = (D.trade.teamSimWins && D.trade.teamSimWins[LL.team]) || (D.trade.k * bNet + D.trade.c);
+    const bChamp = champCurve().base[LL.team] || 0;
+    const dW = wins - bWins, dC = (champ - bChamp) * 100;
+    const fit = teamFit(rost);
+    out.innerHTML =
+      `<div class="ll-hero">`
+      + `<div class="ll-hcell"><div class="ll-k">Proj net</div><div class="ll-v">${signed(net, 1)}</div></div>`
+      + `<div class="ll-hcell"><div class="ll-k">Proj wins</div><div class="ll-v">${fmt(wins, 1)}<span class="ll-d ${dW >= 0 ? "pos" : "neg"}">${signed(dW, 1)}</span></div></div>`
+      + `<div class="ll-hcell"><div class="ll-k">Championship</div><div class="ll-v">${(champ * 100).toFixed(1)}%<span class="ll-d ${dC >= 0 ? "pos" : "neg"}">${dC >= 0 ? "+" : ""}${dC.toFixed(1)}</span></div></div>`
+      + `</div>`
+      + `<p class="result-note">vs ${LL.team}'s actual rotation — ${fmt(bWins, 0)} wins, ${(bChamp * 100).toFixed(1)}% title. Δ shown in green/red.</p>`
+      + (fit ? `<div class="ll-fit"><div class="fp-sub">Rotation balance</div>` + fit.map((d) =>
+        `<div class="fp-row"><span class="fp-name">${d.name}</span>`
+        + `<span class="fp-track"><span class="fp-fill" style="width:${Math.round(d.val)}%;background:${pctColor(d.val)}"></span></span>`
+        + `<span class="fp-val">${Math.round(d.val)}</span></div>`).join("") + `</div>` : "");
   }
 
   function renderTrade() {
