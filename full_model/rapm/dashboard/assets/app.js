@@ -695,14 +695,15 @@
   const PRE_COLS = [
     ["team", "Team", (r) => `<span class="team-tag">${r.team}</span> ${teamName(r.team)}`, true],
     ["predNet", "Pred Net", (r) => signed(r.predNet, 1)],
-    ["projWins", "Proj W", (r) => `<b>${fmt(r.projWins, 1)}</b>`],
+    ["projWins", "Proj W", (r) => `<b title="schedule-sim mean \u2014 converts net to wins through the real schedule (beats the linear map out-of-sample)">${fmt(pw(r), 1)}</b>`],
     ["range", "Sim range (10\u201390%)", (r) => `${r.p10}\u2013${r.p90}`, true],
     ["pPlayoff", "Playoff", (r) => pctCell(r.pPlayoff)],
     ["pChamp", "Champ", (r) => r.pChamp == null ? "\u2014" : pctCell(r.pChamp)],
     ["actualWins", "Actual W", (r) => r.actualWins == null ? "\u2014" : winCmp(r)],
   ];
+  function pw(r) { return r.simMean != null ? r.simMean : r.projWins; }
   function winCmp(r) {
-    const err = r.projWins - r.actualWins;
+    const err = pw(r) - r.actualWins;
     const cls = Math.abs(err) <= 5 ? "pos" : "neg";
     return `${r.actualWins} <span class="${cls}" style="font-size:11px">(${signed(err, 1)})</span>`;
   }
@@ -711,6 +712,7 @@
     let rows = D.preseason.filter((p) => p.season === yr);
     rows.sort((a, b) => {
       if (preSort.key === "range") return (a.p50 - b.p50) * preSort.dir;
+      if (preSort.key === "projWins") return (pw(a) - pw(b)) * preSort.dir;
       const A = a[preSort.key], B = b[preSort.key];
       const c = typeof A === "string" ? A.localeCompare(B) : A - B; return c * preSort.dir;
     });
