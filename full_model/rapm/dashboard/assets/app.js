@@ -52,7 +52,7 @@
       $("#skill-bars").innerHTML = `<p class="result-note">No true-skill profile for this player-season (needs 500+ minutes).</p>`;
       return;
     }
-    if (note) note.textContent = `${seasonLabelFull(row.season)}${row.archetype ? " · " + row.archetype : ""} · true-skill percentile vs league (hover a row for the raw stat)`;
+    if (note) note.textContent = `${seasonLabelFull(row.season)}${row.archetype ? " · " + row.archetype : ""}`;
     const order = ["offense", "defense", "three_pct", "rim_finish", "efficiency", "shot_making",
                    "free_throw", "self_creation", "off_gravity", "on_gravity", "playmaking",
                    "creation", "foul_draw", "ball_security", "rebounding", "steals", "rim_protect",
@@ -302,10 +302,7 @@
       "</tr>").join("");
     $("#lb-note").textContent =
       `${rows.length.toLocaleString()} player-seasons` +
-      (rows.length > 400 ? " (showing top 400)" : "") +
-      ` \u00b7 ranked by BOOKER (predictive WAA / 3000 poss, skill); WAA = hybrid skills+impact` +
-      ` \u00b7 search is scoped to the selected season (choose \u201cAll seasons\u201d to search every year)` +
-      ` \u00b7 True Value = skill-based AAV from BOOKER, age penalty removed; surplus = True Value \u2212 contract`;
+      (rows.length > 400 ? " \u00b7 top 400" : "");
   }
   $("#lb-table thead").addEventListener("click", (e) => {
     const th = e.target.closest("th"); if (!th) return;
@@ -639,8 +636,8 @@
     const pooled = gm.find((m) => m.label === "Pooled") || {};
     const hasMkt = pooled.marketLogloss != null;
     $("#go-lede").textContent = hasMkt
-      ? "BOOKER's pre-tip win probabilities use only player impacts known before each game, then meet the closing moneyline (vig removed). Beating the market is hard \u2014 here is how close we get."
-      : "BOOKER's pre-tip win probabilities use only player impacts known before each game. Market lines were unavailable for the latest seasons; skill is shown against outcomes.";
+      ? "Pre-tip win probabilities vs the closing moneyline (vig removed)."
+      : "Pre-tip win probabilities vs outcomes; market lines unavailable for recent seasons.";
     const cards = [
       ["Model log-loss", fmt(pooled.modelLogloss, 4), "lower is better"],
       ["Model accuracy", pooled.modelAcc != null ? (pooled.modelAcc * 100).toFixed(1) + "%" : "\u2014", "straight-up picks"],
@@ -846,9 +843,7 @@
       return;
     }
     const cap = T.capRules || {};
-    $("#trade-lede").textContent =
-      `Build a package trade for ${seasonLabel(T.season)} (up to ${MAX_TRADE_ASSETS} players per side). ` +
-      `True Value uses local salary history + FA signings inflated to 2026 cap dollars.`;
+    $("#trade-lede").textContent = `${seasonLabel(T.season)} · up to ${MAX_TRADE_ASSETS} players per side`;
     if (cap.cap) {
       $("#trade-cap-hint").textContent =
         `cap ${money(cap.cap)} · tax ${money(cap.tax)} · MLE ${money(cap.mle)}`;
@@ -968,9 +963,7 @@
 
     const namesA = outA.map((p) => p.player).join(", ") || "(none)";
     const namesB = outB.map((p) => p.player).join(", ") || "(none)";
-    $("#trade-lede").textContent =
-      `${ta} sends ${namesA} for ${namesB}. ` +
-      `Fair value from local salary history + FA signings (2026 cap dollars).`;
+    $("#trade-lede").textContent = `${ta} sends ${namesA} for ${namesB}.`;
 
     const contractRows = [...outA, ...inA, ...outB, ...inB]
       .filter((p, i, arr) => arr.findIndex((x) => x.pid === p.pid) === i);
@@ -1190,9 +1183,7 @@
   function renderDiagnostics() {
     const d = D.diagnostics;
     if (!d) { $("#diag-intro").textContent = "Diagnostics unavailable."; return; }
-    $("#diag-intro").innerHTML =
-      `${d.model}. Each player carries a posterior <em>mean</em> and <em>standard deviation</em> ` +
-      `on their offensive and defensive rating; the intervals below are 95% credible (±1.96·SD).`;
+    $("#diag-intro").innerHTML = `${d.model} · 95% credible intervals (±1.96·SD).`;
 
     // backtest table
     const bt = d.backtest;

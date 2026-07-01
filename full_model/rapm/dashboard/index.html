@@ -11,9 +11,9 @@
   <div class="wrap mast-inner">
     <div class="brand">
       <span class="brand-mark">BOOKER</span>
-      <span class="brand-sub">The NBA Wins Above Average Almanac</span>
+      <span class="brand-sub">Wins Above Average</span>
     </div>
-    <div class="brand-est">Est. MMXXVI &middot; Play-by-Play Records 2015&ndash;2027</div>
+    <div class="brand-est">2015&ndash;2027</div>
   </div>
   <nav class="tabs wrap" id="tabs">
     <button class="tab is-active" data-view="leaderboard">Leaderboard</button>
@@ -31,7 +31,6 @@
   <!-- LEADERBOARD ------------------------------------------------------ -->
   <section id="view-leaderboard" class="view">
     <h2 class="page-head">Player Wins Above Average</h2>
-    <p class="lede">Ranked by <strong>BookerFormer</strong> WAA (Bayesian RAPM). <strong>BOOKER</strong> = forward-looking predictive WAA per 3000 possessions (pure skill, no aging); <em>Enh WAA</em> is the prior ridge model (click headers to compare orderings). <strong>True Value</strong> = the skill-based fair AAV from a BOOKER + age model fit on free-agent signings, with the market's age penalty removed; surplus = True Value − actual contract. Click any player for a full skill &amp; value breakdown.</p>
     <div class="controls">
       <div class="ctrl">
         <label for="f-season">Season</label>
@@ -97,8 +96,7 @@
     <div class="panel-row">
       <div class="panel">
         <div class="panel-title-row">
-          <h3 class="panel-title">Preseason projection
-            <span class="panel-hint">roster &amp; prior-season impact, before a ball is tipped</span></h3>
+          <h3 class="panel-title">Preseason projection</h3>
           <div class="ctrl inline">
             <label for="f-pre-season">Season</label>
             <select id="f-pre-season"></select>
@@ -110,8 +108,7 @@
       </div>
       <div class="panel">
         <div class="panel-title-row">
-          <h3 class="panel-title">In-season projection trajectory
-            <span class="panel-hint">projected final wins as games are played</span></h3>
+          <h3 class="panel-title">In-season trajectory</h3>
           <div class="ctrl inline">
             <label for="f-tl-season">Season</label>
             <select id="f-tl-season"></select>
@@ -126,8 +123,7 @@
     <div class="cards" id="forecast-cards"></div>
     <div class="panel-row">
       <div class="panel">
-        <h3 class="panel-title">Predicted vs actual wins
-          <span class="panel-hint">out-of-sample, before each season</span></h3>
+        <h3 class="panel-title">Predicted vs actual wins</h3>
         <div class="chart-box tall"><canvas id="scatter-chart"></canvas></div>
       </div>
       <div class="panel">
@@ -156,8 +152,7 @@
     <p class="lede" id="trade-lede"></p>
     <div class="panel">
       <div class="panel-title-row">
-        <h3 class="panel-title">Multi-asset trade (up to 6 players per side)
-          <span class="panel-hint">fit-adjusted WAA + cap-equivalent 2026 contract values</span></h3>
+        <h3 class="panel-title">Multi-asset trade</h3>
       </div>
       <div class="trade-grid">
         <div class="trade-side">
@@ -185,8 +180,7 @@
       </div>
     </div>
     <div class="panel">
-      <h3 class="panel-title">Projected standings shift
-        <span class="panel-hint">linear net-rating map + preseason sim baseline</span></h3>
+      <h3 class="panel-title">Projected standings shift</h3>
       <div class="table-scroll">
         <table class="grid" id="trade-table"><thead></thead><tbody></tbody></table>
       </div>
@@ -200,13 +194,11 @@
     <div class="cards" id="go-cards"></div>
     <div class="panel-row">
       <div class="panel">
-        <h3 class="panel-title">Reliability curve
-          <span class="panel-hint">predicted vs observed home win rate</span></h3>
+        <h3 class="panel-title">Reliability curve</h3>
         <div class="chart-box tall"><canvas id="calib-chart"></canvas></div>
       </div>
       <div class="panel">
-        <h3 class="panel-title">Skill by season
-          <span class="panel-hint">log-loss: BOOKER vs closing line</span></h3>
+        <h3 class="panel-title">Skill by season</h3>
         <div class="chart-box tall"><canvas id="go-season-chart"></canvas></div>
       </div>
     </div>
@@ -226,7 +218,6 @@
   <!-- STAT LEADERS ----------------------------------------------------- -->
   <section id="view-leaders" class="view" hidden>
     <h2 class="page-head">True-Skill Leaders</h2>
-    <p class="lede">Estimated <b>true skill</b>, not raw stats: every column is difficulty- and opportunity-adjusted and empirical-Bayes shrunk toward a player's stable talent. Shooting (3P%, Rim%, eFG%) is adjusted for shot difficulty over a multi-year window; rate skills (AST/REB/STL/BLK) are per-36 talent estimates. <b>Hover any cell for the raw stat.</b> Color = percentile vs all 500+ minute players. Click a header to sort, a player for the full breakdown.</p>
     <div class="controls">
       <label>Season <select id="ld-season"></select></label>
       <label>Min minutes <select id="ld-min"><option value="250">250</option><option value="500" selected>500</option><option value="1000">1000</option><option value="1500">1500</option></select></label>
@@ -237,7 +228,6 @@
   <!-- MATCHUPS --------------------------------------------------------- -->
   <section id="view-matchups" class="view" hidden>
     <h2 class="page-head">Team Matchups</h2>
-    <p class="lede">A <b>scouting</b> view, not a predictor: how two teams match up across size and the granular skills (minutes-weighted team profiles from the rotation). Each row pits one team's offensive strength against the other's matching defense. <b>Matchup tendencies don't improve win-probability beyond each team's overall strength</b> (tested four ways) — this shows <i>where</i> the battlegrounds are.</p>
     <div class="controls">
       <label>Season <select id="mu-season"></select></label>
       <label>Team A <select id="mu-team-a"></select></label>
