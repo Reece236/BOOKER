@@ -52,7 +52,7 @@
       $("#skill-bars").innerHTML = `<p class="result-note">No true-skill profile for this player-season (needs 500+ minutes).</p>`;
       return;
     }
-    if (note) note.textContent = `${seasonLabelFull(row.season)}${row.archetype ? " · " + row.archetype : ""}`;
+    if (note) note.textContent = `${seasonLabelFull(row.season)}`;
     const order = ["offense", "defense", "three_pct", "rim_finish", "efficiency", "shot_making",
                    "free_throw", "self_creation", "off_gravity", "on_gravity", "playmaking",
                    "creation", "foul_draw", "ball_security", "rebounding", "steals", "rim_protect",
@@ -214,6 +214,8 @@
       cell: (r) => `<span class="rankcell">${r.rankModel != null ? r.rankModel : r.rank}</span>` },
     { key: "player", label: "Player", text: true, cell: (r) => `<span class="namecell">${r.player}</span>` },
     { key: "team", label: "Team", text: true, cell: (r) => `<span class="team-tag">${r.team}</span>` },
+    { key: "scarcityPct", label: "Rarity", cell: (r) => r.scarcityPct != null
+      ? `<span title="profile rarity — how unusual this player's style is vs the league (PCA-space density)">${r.scarcityPct}</span>` : "—" },
     { key: "season", label: "Season", cell: (r) => seasonLabel(r.season) },
     { key: "grade", label: "Grade", text: true,
       cell: (r) => r.grade != null ? `<span class="grade grade-${(r.gradeLetter||"").replace("+","p").replace("-","m")}" title="sticky age-curved team-independent grade">${r.gradeLetter} <small>${r.grade}</small></span>` : "\u2014" },
@@ -337,6 +339,30 @@
    *  PLAYER
    * ===================================================================== */
   $("#player-back").addEventListener("click", () => showView("leaderboard"));
+  function renderDNA(row) {
+    const panel = $("#comps-panel"), box = $("#player-comps");
+    if (!box) return;
+    const axes = row && row.styleAxes, cs = row && row.comparables;
+    if ((!axes || !axes.length) && (!cs || !cs.length)) { if (panel) panel.hidden = true; return; }
+    if (panel) panel.hidden = false;
+    let html = "";
+    if (axes && axes.length) {
+      html += `<div class="fp-wrap">` + axes.map((a) =>
+        `<div class="fp-row"><span class="fp-name">${a.axis}</span>` +
+        `<span class="fp-track"><span class="fp-fill" style="width:${a.pct}%;background:${pctColor(a.pct)}"></span></span>` +
+        `<span class="fp-val">${a.pct}</span></div>`).join("") + `</div>`;
+    }
+    if (cs && cs.length) {
+      html += `<div class="fp-sub">Most similar players</div><div class="comps-wrap">` + cs.map((c) =>
+        `<button class="comp-chip" data-pid="${c.pid}" title="style similarity ${(c.sim * 100).toFixed(0)}%">` +
+        `${c.player}<small>'${String(c.season).slice(2)} · ${(c.sim * 100).toFixed(0)}%</small></button>`).join("") + `</div>`;
+    }
+    box.innerHTML = html;
+  }
+  const compsBox = $("#player-comps");
+  if (compsBox) compsBox.addEventListener("click", (e) => {
+    const b = e.target.closest(".comp-chip"); if (b) openPlayer(+b.dataset.pid);
+  });
   function openPlayer(pid) {
     const seasons = D.players.filter((p) => p.pid === pid).sort((a, b) => a.season - b.season);
     if (!seasons.length) return;
@@ -359,7 +385,8 @@
     $("#player-head").innerHTML =
       `<h2>${name}</h2>` +
       `<span class="ph-meta">${teams.join(", ")} \u00b7 ${seasons.length} season${seasons.length > 1 ? "s" : ""}` +
-      ` \u00b7 ${seasonLabel(seasons[0].season)}\u2013${seasonLabel(seasons[seasons.length - 1].season)}</span>` +
+      ` \u00b7 ${seasonLabel(seasons[0].season)}\u2013${seasonLabel(seasons[seasons.length - 1].season)}` +
+      `${latest.scarcityPct != null ? ` \u00b7 <span title="profile rarity vs the league (PCA-space density)">rarity ${latest.scarcityPct}th %ile</span>` : ""}</span>` +
       gradeHero +
       `<div class="ph-stat">` +
       `<div class="s"><div class="k">Total WAA</div><div class="v">${signed(totWaa, 1)}</div></div>` +
@@ -376,6 +403,7 @@
     setupCompare(profSeason);
     renderValueDerivation(profSeason);
     renderSkillTrajectory(seasons);
+    renderDNA(latest);
 
     const tcols = [
       ["season", "Season", (r) => seasonLabel(r.season), true],
