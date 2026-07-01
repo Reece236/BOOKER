@@ -254,8 +254,8 @@
       + (band != null ? `<span class="ci">±${band.toFixed(1)}</span>` : "") + "</span>";
   }
   const LB_COLS = [
-    { key: "rankModel", label: "#", text: true,
-      cell: (r) => `<span class="rankcell">${r.rankModel != null ? r.rankModel : r.rank}</span>` },
+    { key: "_waaRank", label: "#", text: true,
+      cell: (r) => `<span class="rankcell">${r._waaRank != null ? r._waaRank : "—"}</span>` },
     { key: "player", label: "Player", text: true, cell: (r) => `<span class="namecell">${r.player}</span>` },
     { key: "team", label: "Team", text: true, cell: (r) => `<span class="team-tag">${r.team}</span>` },
     { key: "scarcityPct", label: "Rarity", cell: (r) => r.scarcityPct != null
@@ -285,16 +285,30 @@
     { key: "surplus", label: "Surplus", cell: (r) => r.surplus != null
       ? `<span class="${r.surplus >= 0 ? "pos" : "neg"}" title="True Value minus actual contract">${money(r.surplus)}</span>` : "\u2014" },
   ];
-  let maxWaa = Math.max.apply(null, D.players.map((p) => p.waaModel != null ? p.waaModel : p.waa));
+  // Ranking / WAA-column value: ACCUMULATED WAA for actual seasons; WAA per 1500 minutes
+  // for FUTURE (projection) seasons, where minutes are speculative so a per-workload rate
+  // is the fair comparison.
+  function rv(p) {
+    const w = p.waaModel != null ? p.waaModel : (p.waa || 0);
+    return (p.predictive && p.min > 0) ? w * 1500 / p.min : w;
+  }
+  // absolute per-season rank by rv (the # column)
+  (function () {
+    const by = {};
+    D.players.forEach((p) => { (by[p.season] || (by[p.season] = [])).push(p); });
+    Object.values(by).forEach((list) => {
+      list.slice().sort((a, b) => rv(b) - rv(a)).forEach((p, i) => { p._waaRank = i + 1; });
+    });
+  })();
+  let maxWaa = Math.max.apply(null, D.players.map(rv));
   function waaBar(r) {
-    const v = r.waaModel != null ? r.waaModel : r.waa;
+    const v = rv(r);
     const w = Math.max(0, (v / maxWaa) * 100);
     const c = v >= 0 ? "pos" : "neg";
-    const tip = (r.bfOff100 != null && r.sdOff != null)
-      ? ` title="BookerFormer rating/100 — Off ${signed(r.bfOff100, 1)}±${(1.96 * r.sdOff).toFixed(1)}, ` +
-        `Def ${signed(r.bfDef100, 1)}±${(1.96 * r.sdDef).toFixed(1)} (95% CI)"`
-      : "";
-    return `<span class="bar-cell"${tip}><span class="bar" style="width:${w}%"></span>` +
+    const per = r.predictive ? " per 1500 min (projection)" : "";
+    const ci = (r.bfOff100 != null && r.sdOff != null)
+      ? ` — rating/100 Off ${signed(r.bfOff100, 1)}±${(1.96 * r.sdOff).toFixed(1)}, Def ${signed(r.bfDef100, 1)}±${(1.96 * r.sdDef).toFixed(1)}` : "";
+    return `<span class="bar-cell" title="WAA${per}${ci}"><span class="bar" style="width:${w}%"></span>` +
            `<span class="${c}">${signed(v, 1)}</span></span>`;
   }
   // BookerFormer offense/defense rating per 100 with a 95% credible interval.
@@ -304,7 +318,7 @@
     return `<span title="BookerFormer Bayesian offense / defense rating per 100 possessions, with 95% credible interval. Intervals narrow as a player logs more minutes.">` +
            `${ci(r.bfOff100, r.sdOff)} / ${ci(r.bfDef100, r.sdDef)}</span>`;
   }
-  const lbSort = { key: "bookerScore", dir: -1 };
+  const lbSort = { key: "waaModel", dir: -1 };   // default: rank by WAA (WAA/1500 for projections)
 
   function lbFilter() {
     const season = $("#f-season").value;
@@ -320,9 +334,8 @@
     if (q) rows = rows.filter((p) => (p.player || "").toLowerCase().includes(q));
     rows.sort((a, b) => {
       let A = a[lbSort.key], B = b[lbSort.key];
-      if (lbSort.key === "waaModel") {
-        A = a.waaModel != null ? a.waaModel : a.waa;
-        B = b.waaModel != null ? b.waaModel : b.waa;
+      if (lbSort.key === "waaModel" || lbSort.key === "_waaRank") {   // rank by WAA (WAA/1500 for projections)
+        A = rv(a); B = rv(b);
       }
       if (A == null && B == null) return 0;
       if (A == null) return 1;
