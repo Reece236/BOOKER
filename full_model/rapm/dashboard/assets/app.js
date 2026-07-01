@@ -952,6 +952,61 @@
     return tradeRoster(team).filter((p) => !outIds.has(p.pid)).concat(inc);
   }
 
+  // ---- championship-odds model for the trade screen ----
+  // Saturating fit of title odds vs team net, calibrated to the season's bracket-sim
+  // champ%s, so Δtitle-odds respects diminishing returns: mid-tier contenders gain the
+  // most per net point, favorites near the ceiling gain little, lottery teams ~nothing.
+  // (A runaway softmax would say a star lifts the best team +40 pts -- it doesn't.)
+  let _champFit = null;
+  function champCurve() {
+    if (_champFit) return _champFit;
+    const base = {};
+    (D.preseason || []).forEach((r) => {
+      if (r.season === D.trade.season && r.pChamp != null) base[r.team] = r.pChamp; });
+    const pts = Object.keys(D.trade.teamNet).map((t) => ({ net: D.trade.teamNet[t], ch: base[t] || 0 }));
+    const Lmax = Math.max(0.6, Math.max.apply(null, pts.map((p) => p.ch)) * 1.15);
+    const xs = [], ys = [];
+    pts.forEach((p) => { const f = p.ch / Lmax; if (f > 0.004 && f < 0.98) { xs.push(p.net); ys.push(Math.log(f / (1 - f))); } });
+    let b = 0.3, a = -3;
+    if (xs.length > 3) {
+      const n = xs.length, mx = xs.reduce((s, v) => s + v, 0) / n, my = ys.reduce((s, v) => s + v, 0) / n;
+      let sxy = 0, sxx = 0;
+      for (let i = 0; i < n; i++) { sxy += (xs[i] - mx) * (ys[i] - my); sxx += (xs[i] - mx) ** 2; }
+      b = sxx > 0 ? sxy / sxx : 0.3; a = my - b * mx;
+    }
+    _champFit = { fn: (net) => Lmax / (1 + Math.exp(-(a + b * net))), base };
+    return _champFit;
+  }
+  function champAfter(team, newNet) {          // title odds after a team's net changes
+    const cc = champCurve();
+    const b0 = cc.base[team] || 0;
+    return Math.max(0, Math.min(0.99, b0 + cc.fn(newNet) - cc.fn(D.trade.teamNet[team])));
+  }
+  // free agents = rated players NOT on any roster this season (LeBron-style signings)
+  let _faPool = null;
+  function faPool() {
+    if (_faPool) return _faPool;
+    const rostered = new Set((D.trade.players || []).map((p) => p.pid));
+    const best = {};
+    (D.players || []).forEach((p) => {
+      if (p.predictive || rostered.has(p.pid) || (p.min || 0) < 500) return;
+      const cur = best[p.pid];
+      if (!cur || p.season > cur.season) {
+        const imp = p.bfTot100 != null ? p.bfTot100 : (p.bfOff100 || 0) + (p.bfDef100 || 0);
+        best[p.pid] = {
+          pid: p.pid, player: p.player, team: "FA", season: p.season,
+          minutes: Math.min(2200, Math.max(1000, p.min || 1500)),
+          impactTotal: imp, waaTotal: p.waa || 0, marketAav2026: p.marketAav2026 || p.fairAav2026 || 0,
+          gradeOff: p.gradeOff, gradeDef: p.gradeDef, age: p.age,
+        };
+      }
+    });
+    // only players active in the last full season(s) are real free agents (drop retirees)
+    _faPool = Object.values(best).filter((f) => f.season >= lastFull - 1)
+      .sort((a, b) => b.impactTotal - a.impactTotal);
+    return _faPool;
+  }
+
   function renderTrade() {
     const T = D.trade;
     if (!T || !T.players) {
@@ -959,7 +1014,7 @@
       return;
     }
     const cap = T.capRules || {};
-    $("#trade-lede").textContent = `${seasonLabel(T.season)} · up to ${MAX_TRADE_ASSETS} players per side`;
+    $("#trade-lede").textContent = `${seasonLabel(T.season)} · trade two teams, or set Team B to “Free agents” to sign one · verdict = championship-odds swing`;
     if (cap.cap) {
       $("#trade-cap-hint").textContent =
         `cap ${money(cap.cap)} · tax ${money(cap.tax)} · MLE ${money(cap.mle)}`;
@@ -969,7 +1024,8 @@
     const selA = $("#trade-team-a"), selB = $("#trade-team-b");
     if (!tradeReady) {
       selA.innerHTML = teams.map((t) => `<option value="${t}">${t} \u2014 ${teamName(t)}</option>`).join("");
-      selB.innerHTML = teams.map((t) => `<option value="${t}">${t} \u2014 ${teamName(t)}</option>`).join("");
+      selB.innerHTML = `<option value="FA">\u2726 Free agents (sign)</option>`
+        + teams.map((t) => `<option value="${t}">${t} \u2014 ${teamName(t)}</option>`).join("");
       selA.value = teams.includes("LAL") ? "LAL" : teams[0];
       selB.value = teams.includes("NOP") ? "NOP" : teams[1] || teams[0];
       selA.addEventListener("change", fillTradePlayers);
@@ -984,6 +1040,7 @@
   }
 
   function tradeRoster(team) {
+    if (team === "FA") return faPool();
     return (D.trade.players || [])
       .filter((p) => p.team === team)
       .sort((a, b) => b.minutes - a.minutes);
@@ -1019,8 +1076,9 @@
     const pidsB = selectedTradePids("#trade-players-b");
     if (!pidsA.length && !pidsB.length) return;
 
-    const outA = pidsA.map((id) => T.players.find((p) => p.pid === id)).filter(Boolean);
-    const outB = pidsB.map((id) => T.players.find((p) => p.pid === id)).filter(Boolean);
+    const findP = (pool, id) => pool.find((p) => p.pid === id) || T.players.find((p) => p.pid === id);
+    const outA = pidsA.map((id) => findP(tradeRoster(ta), id)).filter(Boolean);
+    const outB = pidsB.map((id) => findP(tradeRoster(tb), id)).filter(Boolean);
     const inA = outB, inB = outA;
 
     let newNetA = T.teamNet[ta];
@@ -1032,22 +1090,63 @@
 
     const dA = T.k * (newNetA - T.teamNet[ta]);
     const dB = T.k * (newNetB - T.teamNet[tb]);
-    const wA0 = T.teamSimWins[ta] || T.teamWins[ta];
-    const wB0 = T.teamSimWins[tb] || T.teamWins[tb];
+    const wA0 = T.teamSimWins[ta] || T.teamWins[ta] || 0;
+    const wB0 = T.teamSimWins[tb] || T.teamWins[tb] || 0;
+    const faB = tb === "FA";
+    const chA0 = champCurve().base[ta] || 0, chB0 = champCurve().base[tb] || 0;
+    const chA1 = champAfter(ta, newNetA);
+    const chB1 = faB ? chB0 : champAfter(tb, newNetB);
 
-    const salOutA = outA.map(playerSalary2026);
     const salInA = inA.map(playerSalary2026);
-    const salOutB = outB.map(playerSalary2026);
-    const salInB = inB.map(playerSalary2026);
-    const matchA = salaryMatch(salOutA, salInA);
-    const matchB = salaryMatch(salOutB, salInB);
+    const matchA = salaryMatch(outA.map(playerSalary2026), salInA);
+    const matchB = salaryMatch(outB.map(playerSalary2026), inB.map(playerSalary2026));
 
-    $("#trade-cards").innerHTML = [
-      [`${ta} wins`, `${fmt(wA0, 1)} \u2192 ${fmt(wA0 + dA, 1)}`, `${signed(dA, 1)} wins`],
-      [`${tb} wins`, `${fmt(wB0, 1)} \u2192 ${fmt(wB0 + dB, 1)}`, `${signed(dB, 1)} wins`],
-      [`${ta} salary`, `${money(salOutA.reduce((a, b) => a + b, 0))} out`, `<span class="${matchA.ok ? "salary-ok" : "salary-bad"}">${matchA.note}</span>`],
-      [`${tb} salary`, `${money(salOutB.reduce((a, b) => a + b, 0))} out`, `<span class="${matchB.ok ? "salary-ok" : "salary-bad"}">${matchB.note}</span>`],
-    ].map((c) => `<div class="card"><div class="k">${c[0]}</div><div class="v">${c[1]}</div><div class="d">${c[2]}</div></div>`).join("");
+    // biggest rotation-balance shift after the deal (spacing / rim / creation / perim D)
+    const fitTag = (team, out, gets) => {
+      if (team === "FA") return "";
+      const bf = teamFit(tradeRoster(team)), af = teamFit(rosterAfter(team, out, gets));
+      if (!bf || !af) return "";
+      let best = null;
+      bf.forEach((b, i) => { const d = af[i].val - b.val; if (!best || Math.abs(d) > Math.abs(best.d)) best = { name: b.name, d }; });
+      if (!best || Math.abs(best.d) < 1) return `<div class="sb-fit">fit \u2248 unchanged</div>`;
+      return `<div class="sb-fit ${best.d >= 0 ? "pos" : "neg"}">${best.d >= 0 ? "\u25b2 +" : "\u25bc "}${Math.round(best.d)} ${best.name}</div>`;
+    };
+    const teamCard = (team, w0, dW, ch0, ch1, out, gets) => {
+      const dch = (ch1 - ch0) * 100;
+      return `<div class="sb-card">
+        <div class="sb-team"><span class="team-tag">${team}</span> ${teamName(team)}</div>
+        <div class="sb-hero">
+          <div class="sb-hlbl">Championship odds</div>
+          <div class="sb-hval">${(ch0 * 100).toFixed(1)}<span class="sb-to">\u2192</span><b class="${dch >= 0 ? "pos" : "neg"}">${(ch1 * 100).toFixed(1)}%</b></div>
+          <div class="sb-hdelta ${dch >= 0 ? "pos" : "neg"}">${dch >= 0 ? "+" : ""}${dch.toFixed(1)} title pts</div>
+        </div>
+        <div class="sb-row"><span>Projected wins</span><b>${fmt(w0, 1)} \u2192 ${fmt(w0 + dW, 1)} <span class="${dW >= 0 ? "pos" : "neg"}">(${signed(dW, 1)})</span></b></div>
+        ${fitTag(team, out, gets)}
+        <div class="sb-moves">gets <b>${gets.map((p) => p.player).join(", ") || "\u2014"}</b></div>
+        ${out.length ? `<div class="sb-moves out">sends ${out.map((p) => p.player).join(", ")}</div>` : ""}
+      </div>`;
+    };
+    // verdict by championship-odds swing (the hero metric); tie-break on wins
+    let verdict, vcls, legal;
+    if (faB) {
+      const cost = salInA.reduce((a, b) => a + b, 0);
+      verdict = `${ta} signs ${inA.map((p) => p.player).join(", ") || "\u2014"}`;
+      vcls = "win"; legal = true;
+      $("#trade-cards").dataset.faCost = money(cost);
+    } else {
+      const swA = chA1 - chA0, swB = chB1 - chB0;
+      if (Math.abs(swA - swB) < 0.005 && Math.abs(dA - dB) < 1.0) { verdict = "Fair deal \u2014 both sides roughly even"; vcls = "even"; }
+      else if (swA > swB || (Math.abs(swA - swB) < 0.005 && dA >= dB)) verdict = `${ta} wins this deal`, vcls = "win";
+      else verdict = `${tb} wins this deal`, vcls = "win";
+      legal = matchA.ok && matchB.ok;
+    }
+    const legalHtml = faB
+      ? `<span class="sb-legal ok">signs for ${$("#trade-cards").dataset.faCost}/yr</span>`
+      : `<span class="sb-legal ${legal ? "ok" : "bad"}">${legal ? "\u2713 salary-legal" : "\u2717 salary mismatch"}</span>`;
+    $("#trade-cards").innerHTML = `<div class="scoreboard">
+      <div class="sb-verdict ${vcls}"><span>${verdict}</span>${legalHtml}</div>
+      <div class="sb-grid ${faB ? "solo" : ""}">${teamCard(ta, wA0, dA, chA0, chA1, outA, inA)}${faB ? "" : teamCard(tb, wB0, dB, chB0, chB1, outB, inB)}</div>
+    </div>`;
 
     // --- trade impact breakdown: skill profile, timeline (age), depth (minutes) ---
     const sideAgg = (list) => {
