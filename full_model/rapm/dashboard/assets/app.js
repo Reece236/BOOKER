@@ -19,6 +19,14 @@
   // last full (non-projection) season -- the leaderboard's default view
   const _fullSeasons = D.players.filter((p) => !p.predictive).map((p) => p.season);
   const lastFull = _fullSeasons.length ? Math.max.apply(null, _fullSeasons) : latest;
+  // Every season dropdown defaults to the last *played* season (not a projection
+  // year and not "All"). Reads the select's own numeric options; falls back to the
+  // max available season if lastFull isn't among them.
+  function defaultSeason(sel) {
+    const nums = Array.from(sel.options).map((o) => Number(o.value)).filter((n) => !isNaN(n));
+    if (!nums.length) return;
+    sel.value = String(nums.includes(lastFull) ? lastFull : Math.max.apply(null, nums));
+  }
 
   /* ---- savant-style percentile color + skill / value rendering --------- */
   // diverging ramp: low percentile = cool blue, mid = grey, high = warm red
@@ -339,6 +347,28 @@
    *  PLAYER
    * ===================================================================== */
   $("#player-back").addEventListener("click", () => showView("leaderboard"));
+  // Bible-grounded one-line scouting read from the DNA style percentiles.
+  const AXIS_STRONG = {
+    "Shooting": "elite floor-spacer", "Rim / Interior": "interior anchor",
+    "Playmaking": "high-level creator", "Ball Dominance": "primary on-ball engine",
+    "Perimeter D": "stout point-of-attack defender", "Efficiency": "efficient finisher",
+  };
+  const AXIS_WEAK = {
+    "Shooting": "limited spacing", "Rim / Interior": "little rim protection",
+    "Playmaking": "not a shot-creator", "Ball Dominance": "off-ball role",
+    "Perimeter D": "targeted on defense", "Efficiency": "inefficient scoring",
+  };
+  function scoutNote(axes) {
+    if (!axes || !axes.length) return "";
+    const sorted = axes.slice().sort((a, b) => b.pct - a.pct);
+    const strengths = sorted.filter((a) => a.pct >= 78).slice(0, 2)
+      .map((a) => AXIS_STRONG[a.axis]).filter(Boolean);
+    let s = strengths.length ? strengths.join(" and ") : "balanced profile, no standout dimension";
+    const weak = sorted[sorted.length - 1];
+    if (weak && weak.pct <= 22 && AXIS_WEAK[weak.axis]) s += `; ${AXIS_WEAK[weak.axis]}`;
+    return s.charAt(0).toUpperCase() + s.slice(1) + ".";
+  }
+
   function renderDNA(row) {
     const panel = $("#comps-panel"), box = $("#player-comps");
     if (!box) return;
@@ -346,6 +376,8 @@
     if ((!axes || !axes.length) && (!cs || !cs.length)) { if (panel) panel.hidden = true; return; }
     if (panel) panel.hidden = false;
     let html = "";
+    const sn = scoutNote(axes);
+    if (sn) html += `<div class="scout-note">${sn}</div>`;
     if (axes && axes.length) {
       html += `<div class="fp-wrap">` + axes.map((a) =>
         `<div class="fp-row"><span class="fp-name">${a.axis}</span>` +
@@ -494,6 +526,7 @@
       fcSel.innerHTML = `<option value="all">All seasons</option>` +
         yrs.map((s) => `<option value="${s}">${seasonLabel(s)}</option>`).join("");
       fcSel.addEventListener("change", renderTeamTable);
+      defaultSeason(fcSel);
       fcSel.dataset.init = "1";
     }
     renderTeamTable();
@@ -560,6 +593,7 @@
       const yrs = Array.from(new Set(D.preseason.map((p) => p.season))).sort((a, b) => b - a);
       sel.innerHTML = yrs.map((s) => `<option value="${s}">${seasonLabel(s)}</option>`).join("");
       sel.addEventListener("change", drawPreseason);
+      defaultSeason(sel);
       sel.dataset.init = "1";
     }
     drawPreseason();
@@ -608,6 +642,7 @@
       const yrs = Array.from(new Set(D.timeline.map((t) => t.season))).sort((a, b) => b - a);
       sel.innerHTML = yrs.map((s) => `<option value="${s}">${seasonLabel(s)}</option>`).join("");
       sel.addEventListener("change", drawTimeline);
+      defaultSeason(sel);
       sel.dataset.init = "1";
     }
     drawTimeline();
@@ -864,6 +899,46 @@
     return { ok, note: ok ? "125%+$250k matched" : `need ${money(need - inn)} more` };
   }
 
+  // ---- Bible-grounded roster fit (descriptive; win delta stays talent-based) ----
+  // Maps each player to their latest real-season DNA style axes, then rolls a
+  // roster up on the four dimensions that decide half-court games per the
+  // Basketball Bible: spacing, rim protection, shot creation, perimeter defense.
+  let _styleByPid = null;
+  function styleByPid() {
+    if (_styleByPid) return _styleByPid;
+    _styleByPid = {};
+    (D.players || []).forEach((p) => {
+      if (!p.styleAxes || p.predictive) return;
+      const cur = _styleByPid[p.pid];
+      if (!cur || p.season > cur.season) {
+        const ax = {};
+        p.styleAxes.forEach((a) => { ax[a.axis] = a.pct; });
+        _styleByPid[p.pid] = { season: p.season, ax };
+      }
+    });
+    return _styleByPid;
+  }
+  const FIT_DIMS = [
+    ["Spacing", (ax) => ax["Shooting"], "shooting that pulls help out of the paint"],
+    ["Rim protection", (ax) => ax["Rim / Interior"], "interior size &amp; rim presence — “protect the rim first”"],
+    ["Shot creation", (ax) => (num(ax["Playmaking"]) + num(ax["Ball Dominance"])) / 2, "on-ball creation to beat a set defense"],
+    ["Perimeter D", (ax) => ax["Perimeter D"], "on-ball perimeter defense — “stop the ball”"],
+  ];
+  function num(x) { return typeof x === "number" ? x : 0; }
+  function teamFit(roster) {
+    const S = styleByPid();
+    const rows = roster.map((p) => ({ mn: p.minutes, ax: (S[p.pid] || {}).ax })).filter((r) => r.ax);
+    const totMin = rows.reduce((a, r) => a + r.mn, 0);
+    if (!totMin || rows.length < 3) return null;
+    return FIT_DIMS.map(([name, f, desc]) => ({
+      name, desc, val: rows.reduce((a, r) => a + num(f(r.ax)) * r.mn, 0) / totMin,
+    }));
+  }
+  function rosterAfter(team, out, inc) {
+    const outIds = new Set(out.map((p) => p.pid));
+    return tradeRoster(team).filter((p) => !outIds.has(p.pid)).concat(inc);
+  }
+
   function renderTrade() {
     const T = D.trade;
     if (!T || !T.players) {
@@ -989,6 +1064,26 @@
       `<p class="result-note">Minutes-weighted grade of pieces leaving vs arriving (skill-profile change), average age (timeline fit), and rotation minutes (depth). Higher off/def grade is better; younger is greener.</p>` +
       impactRow(ta, outA, inA) + impactRow(tb, outB, inB);
 
+    // --- roster fit / balance (Bible-grounded, descriptive) ---
+    const fitRow = (team, out, inc) => {
+      const before = teamFit(tradeRoster(team)), after = teamFit(rosterAfter(team, out, inc));
+      if (!before || !after) {
+        return `<div class="ti-team"><div class="ti-name"><span class="team-tag">${team}</span> roster fit — insufficient style data</div></div>`;
+      }
+      const cells = before.map((b, i) => {
+        const a = after[i], d = a.val - b.val, cls = d >= 0 ? "pos" : "neg";
+        const gap = a.val < 34 ? ` <span class="fit-gap" title="${b.desc}">thin</span>` : "";
+        return `<div><span class="ti-k">${b.name}${gap}</span>${Math.round(b.val)} → ${Math.round(a.val)} ` +
+          `<span class="${cls}">(${d >= 0 ? "+" : ""}${Math.round(d)})</span></div>`;
+      }).join("");
+      return `<div class="ti-team"><div class="ti-name"><span class="team-tag">${team}</span> rotation balance (percentile)</div><div class="ti-grid">${cells}</div></div>`;
+    };
+    let fit = document.getElementById("trade-fit");
+    if (!fit) { fit = document.createElement("div"); fit.id = "trade-fit"; fit.className = "panel"; imp.insertAdjacentElement("afterend", fit); }
+    fit.innerHTML = `<h3 class="panel-title">Roster fit &amp; balance</h3>` +
+      `<p class="result-note">How each rotation's profile shifts after the trade on the four dimensions that decide half-court games — spacing, rim protection, shot creation, perimeter defense (Basketball Bible). Minutes-weighted percentiles; “thin” flags a bottom-third dimension. Descriptive roster construction — the win projection above stays talent-based.</p>` +
+      fitRow(ta, outA, inA) + fitRow(tb, outB, inB);
+
     const namesA = outA.map((p) => p.player).join(", ") || "(none)";
     const namesB = outB.map((p) => p.player).join(", ") || "(none)";
     $("#trade-lede").textContent = `${ta} sends ${namesA} for ${namesB}.`;
@@ -1071,6 +1166,7 @@
       const seasons = Array.from(new Set(D.players.filter((p) => hasSkills(p))
         .map((p) => p.season))).sort((a, b) => b - a);
       $("#ld-season").innerHTML = seasons.map((s) => `<option value="${s}">${seasonLabelFull(s)}</option>`).join("");
+      defaultSeason($("#ld-season"));
       $("#ld-season").addEventListener("change", drawLeaders);
       $("#ld-min").addEventListener("change", drawLeaders);
       $("#ld-table thead").addEventListener("click", (e) => {
@@ -1167,6 +1263,7 @@
     if (!muInit) {
       muInit = true;
       $("#mu-season").innerHTML = seasons.map((s) => `<option value="${s}">${seasonLabelFull(s)}</option>`).join("");
+      defaultSeason($("#mu-season"));
       $("#mu-season").addEventListener("change", () => { fillMuTeams(); drawMatchup(); });
       $("#mu-team-a").addEventListener("change", drawMatchup);
       $("#mu-team-b").addEventListener("change", drawMatchup);

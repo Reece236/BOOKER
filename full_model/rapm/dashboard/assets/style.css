@@ -211,7 +211,9 @@ table.grid tbody tr.clickable{cursor:pointer}
 .cmp-a.win, .cmp-b.win{font-weight:800}
 .cmp-lab{text-align:center; font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; font-family:var(--sans)}
 .cmp-grade{font-size:18px; font-weight:700; padding-bottom:8px; border-bottom:1px solid var(--rule); margin-bottom:8px; font-family:var(--mono)}
-#trade-impact .ti-team{margin:10px 0; padding:10px 12px; background:var(--paper); border:1px solid var(--rule)}
+#trade-impact .ti-team,#trade-fit .ti-team{margin:10px 0; padding:10px 12px; background:var(--paper); border:1px solid var(--rule)}
+.fit-gap{display:inline-block; margin-left:5px; padding:0 5px; font-size:9px; font-weight:700; letter-spacing:.05em; color:var(--paper); background:var(--neg); border-radius:2px; vertical-align:middle}
+.scout-note{font-family:var(--mono); font-size:13px; line-height:1.5; margin:0 0 12px; padding:8px 11px; background:var(--paper); border-left:2px solid var(--ink)}
 .ti-name{font-weight:700; margin-bottom:8px; font-family:var(--mono)}
 .ti-grid{display:grid; grid-template-columns:repeat(2,1fr); gap:6px 24px; font-variant-numeric:tabular-nums; font-size:13.5px; font-family:var(--mono)}
 .ti-k{display:inline-block; min-width:140px; color:var(--muted); font-size:10px; text-transform:uppercase; letter-spacing:.04em; font-family:var(--mono)}
