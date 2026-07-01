@@ -229,6 +229,29 @@
   /* ===================================================================== *
    *  LEADERBOARD
    * ===================================================================== */
+  // BOOKER cell with a VISIBLE credible band: scale the rating's sd (impact/100) into
+  // BOOKER units (WAA/3000) via the shared net->wins constant, so a low-minute, prior-
+  // driven estimate (wide band) reads differently from a rock-solid one. Flags rows whose
+  // band exceeds half their value as LOW CONFIDENCE (e.g. a 651-min Gafford vs Jokic).
+  let _bkScale = null;
+  function bookerScale() {
+    if (_bkScale != null) return _bkScale;
+    const rs = D.players.filter((p) => p.bookerScore != null && p.bfTot100 != null && Math.abs(p.bfTot100) > 2)
+      .map((p) => p.bookerScore / p.bfTot100).sort((a, b) => a - b);
+    _bkScale = rs.length ? rs[Math.floor(rs.length / 2)] : 1.0;
+    return _bkScale;
+  }
+  function bookerCell(r) {
+    if (r.bookerScore == null) return "—";
+    const band = (r.sdOff != null && r.sdDef != null) ? bookerScale() * Math.hypot(r.sdOff, r.sdDef) : null;
+    const lo = band != null && band > 0.5 * Math.abs(r.bookerScore);
+    const cls = (r.bookerScore >= 0 ? "pos" : "neg") + (lo ? " lo-conf" : "");
+    const tip = "BOOKER: predictive WAA / 3000 poss (skill, no aging)."
+      + (band != null ? ` ±${band.toFixed(1)} (1σ band, widens with fewer minutes)`
+        + (lo ? " — LOW CONFIDENCE, small sample" : "") : "");
+    return `<span class="${cls}" title="${tip}">${signed(r.bookerScore, 1)}`
+      + (band != null ? `<span class="ci">±${band.toFixed(1)}</span>` : "") + "</span>";
+  }
   const LB_COLS = [
     { key: "rankModel", label: "#", text: true,
       cell: (r) => `<span class="rankcell">${r.rankModel != null ? r.rankModel : r.rank}</span>` },
@@ -240,9 +263,7 @@
     { key: "grade", label: "Grade", text: true,
       cell: (r) => r.grade != null ? `<span class="grade grade-${(r.gradeLetter||"").replace("+","p").replace("-","m")}" title="sticky age-curved team-independent grade">${r.gradeLetter} <small>${r.grade}</small></span>` : "\u2014" },
     { key: "min", label: "Min", cell: (r) => r.min.toLocaleString() },
-    { key: "bookerScore", label: "BOOKER", cell: (r) => r.bookerScore != null
-      ? `<span class="${r.bookerScore >= 0 ? "pos" : "neg"}" title="BOOKER score: forward-looking predictive WAA per 3000 possessions (pure skill, no aging).">${signed(r.bookerScore, 1)}</span>`
-      : "\u2014" },
+    { key: "bookerScore", label: "BOOKER", cell: (r) => bookerCell(r) },
     { key: "waaModel", label: "WAA", cell: (r) => waaBar(r) },
     { key: "waaOff", label: "Off", cell: (r) => r.waaOff != null
       ? `<span class="${r.waaOff >= 0 ? "pos" : "neg"}" title="Offensive WAA">${signed(r.waaOff, 1)}</span>` : "\u2014" },
