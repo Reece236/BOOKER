@@ -89,6 +89,21 @@
     const rev = [...ss].reverse();
     return rev.find((s) => hasSkills(s) && s.skills.playmaking) || rev.find((s) => hasSkills(s)) || ss[ss.length - 1];
   }
+  // shared searchable player-name index (compare box + trajectory adder)
+  let _cmpByName = null;
+  function ensureNameIndex() {
+    if (_cmpByName) return _cmpByName;
+    _cmpByName = {};
+    const seen = {};
+    D.players.forEach((p) => {
+      if (!p.player) return;
+      _cmpByName[p.player.toLowerCase()] = p.pid;
+      seen[p.player] = 1;
+    });
+    const dl = $("#cmp-datalist");
+    if (dl) dl.innerHTML = Object.keys(seen).sort().map((nm) => `<option value="${nm}"></option>`).join("");
+    return _cmpByName;
+  }
   let cmpInit = false, curProfRow = null;
   function setupCompare(rowA) {
     curProfRow = rowA;
@@ -96,17 +111,17 @@
     if (!sel) return;
     if (!cmpInit) {
       cmpInit = true;
-      const seen = {};
-      D.players.forEach((p) => { if (!seen[p.pid]) seen[p.pid] = p.player; });
-      sel.insertAdjacentHTML("beforeend", Object.entries(seen)
-        .sort((a, b) => a[1].localeCompare(b[1]))
-        .map(([pid, nm]) => `<option value="${pid}">${nm}</option>`).join(""));
-      sel.addEventListener("change", () => {
-        const bpid = +sel.value;
-        if (!bpid || !curProfRow) { renderSkillProfile(curProfRow); return; }
+      ensureNameIndex();  // searchable input + datalist (a 1100-option select is unusable)
+      const go = () => {
+        const q = sel.value.trim().toLowerCase();
+        if (!q || !curProfRow) { renderSkillProfile(curProfRow); return; }
+        const bpid = _cmpByName[q];
+        if (bpid == null) return;                       // keep typing
         const rowB = profileSeasonFor(bpid);
         rowB ? renderCompareProfile(curProfRow, rowB) : renderSkillProfile(curProfRow);
-      });
+      };
+      sel.addEventListener("change", go);
+      sel.addEventListener("search", go);               // clearing the field resets
     }
     sel.value = "";
   }
@@ -150,7 +165,7 @@
     html += vbar("Total WAA", tot, wmax, COL.ink, (v) => signed(v, 1));
     if (booker != null) {
       html += `<div class="vderiv-sec">Skill rate &amp; value</div>`;
-      html += `<div class="vderiv-line"><span>BOOKER score <em>(WAA / 3000 poss, no aging)</em></span><b>${signed(booker, 1)}</b></div>`;
+      html += `<div class="vderiv-line"><span>BOOKER <em>(+/- per 100 poss, avg starting-caliber context, usage → optimum)</em></span><b>${signed(booker, 1)}</b></div>`;
     }
     if (tv != null) {
       html += `<div class="vderiv-line"><span>True Value <em>(skill-based fair AAV)</em></span><b>${money(tv)}</b></div>`;
@@ -220,6 +235,7 @@
     if (v === "forecast") renderForecast();
     if (v === "trade") renderTrade();
     if (v === "lineup") renderLineup();
+    if (v === "trajectory") renderTrajectory();
     if (v === "gameodds") renderGameOdds();
     if (v === "leaders") renderLeaders();
     if (v === "matchups") renderMatchup();
@@ -231,7 +247,7 @@
    *  LEADERBOARD
    * ===================================================================== */
   // BOOKER cell with a VISIBLE credible band: scale the rating's sd (impact/100) into
-  // BOOKER units (WAA/3000) via the shared net->wins constant, so a low-minute, prior-
+  // BOOKER units (+/- per 100) via the shared scale constant, so a low-minute, prior-
   // driven estimate (wide band) reads differently from a rock-solid one. Flags rows whose
   // band exceeds half their value as LOW CONFIDENCE (e.g. a 651-min Gafford vs Jokic).
   let _bkScale = null;
@@ -247,7 +263,7 @@
     const band = (r.sdOff != null && r.sdDef != null) ? bookerScale() * Math.hypot(r.sdOff, r.sdDef) : null;
     const lo = band != null && band > 0.5 * Math.abs(r.bookerScore);
     const cls = (r.bookerScore >= 0 ? "pos" : "neg") + (lo ? " lo-conf" : "");
-    const tip = "BOOKER: predictive WAA / 3000 poss (skill, no aging)."
+    const tip = "BOOKER: predictive +/- per 100 possessions given average starting-caliber teammates & opponents, usage regressed toward optimum."
       + (band != null ? ` ±${band.toFixed(1)} (1σ band, widens with fewer minutes)`
         + (lo ? " — LOW CONFIDENCE, small sample" : "") : "");
     return `<span class="${cls}" title="${tip}">${signed(r.bookerScore, 1)}`
@@ -551,7 +567,7 @@
         ? `<span title="Sticky, age-curved, team-independent grade">${r.gradeLetter} <small>${r.grade}</small></span>` : "\u2014", true],
       ["min", "Min", (r) => r.min.toLocaleString()],
       ["bookerScore", "BOOKER", (r) => r.bookerScore != null
-        ? `<span class="${r.bookerScore >= 0 ? "pos" : "neg"}" title="Predictive WAA per 3000 possessions (skill, no aging)">${signed(r.bookerScore, 1)}</span>` : "\u2014"],
+        ? `<span class="${r.bookerScore >= 0 ? "pos" : "neg"}" title="BOOKER: predictive +/- per 100 possessions, avg starting-caliber context, usage regressed toward optimum">${signed(r.bookerScore, 1)}</span>` : "\u2014"],
       ["waaOff", "Off WAA", (r) => r.waaOff != null ? signed(r.waaOff, 1) : "\u2014"],
       ["waaDef", "Def WAA", (r) => r.waaDef != null ? signed(r.waaDef, 1) : "\u2014"],
       ["real_pm", "Real +/-", (r) => r.real_pm != null
@@ -1183,6 +1199,160 @@
         `<div class="fp-row"><span class="fp-name">${d.name}</span>`
         + `<span class="fp-track"><span class="fp-fill" style="width:${Math.round(d.val)}%;background:${pctColor(d.val)}"></span></span>`
         + `<span class="fp-val">${Math.round(d.val)}</span></div>`).join("") + `</div>` : "");
+  }
+
+  /* ---- TRAJECTORY: career BOOKER curve + projections ------------------- */
+  const TJ = { players: [], ready: false };
+  const TJ_COLORS = ["#141310", "#7a2820", "#3d5a80", "#6b8e23", "#8b5e83", "#b8860b"];
+  const AGE_PEAK_TJ = 27.0, AGE_QUAD_TJ = -0.03;
+
+  function tjCareer(pid) {
+    // realized seasons only, with the in-season evidence glide: the rating shown at
+    // fraction t of season s is prior + (posterior - prior)·t -- the Bayesian update
+    // path as games accumulate (prior = last season's rating).
+    const ss = D.players.filter((p) => p.pid === pid && !p.predictive && p.bookerScore != null)
+      .sort((a, b) => a.season - b.season);
+    if (!ss.length) return null;
+    const pts = [];
+    let prev = null;
+    ss.forEach((p) => {
+      const v = p.bookerScore;
+      const start = prev == null ? v : prev;
+      for (let t = 0; t <= 1.0001; t += 0.25) {
+        pts.push({ x: p.season - 1 + t, y: +(start + (v - start) * t).toFixed(2) });
+      }
+      prev = v;
+    });
+    const last = ss[ss.length - 1];
+    return { pts, last, name: last.player, seasons: ss };
+  }
+
+  function tjProjection(career, years, optimal) {
+    // forward path along the aging curve from the last real rating; ages from the
+    // grade projection when present. "optimal usage" adds the remaining un-credited
+    // role upside (BOOKER already carries 25% of it).
+    const last = career.last;
+    let v = last.bookerScore;
+    if (optimal && last.role && last.role.upside) v += 0.75 * last.role.upside;
+    let age = (last.gradeProj && last.gradeProj[0] && last.gradeProj[0].age != null)
+      ? last.gradeProj[0].age - 1 : null;
+    const sd0 = (last.sdOff != null) ? Math.hypot(last.sdOff, last.sdDef) : 1.5;
+    const out = [{ x: last.season, y: +v.toFixed(2), lo: v, hi: v }];
+    for (let k = 1; k <= years; k++) {
+      if (age != null) {
+        const a1 = age + k, a0 = age + k - 1;
+        v += AGE_QUAD_TJ * ((a1 - AGE_PEAK_TJ) ** 2 - (a0 - AGE_PEAK_TJ) ** 2);
+      }
+      const sd = sd0 * (1 + 0.25 * k);
+      out.push({ x: last.season + k, y: +v.toFixed(2), lo: +(v - sd).toFixed(2), hi: +(v + sd).toFixed(2) });
+    }
+    return out;
+  }
+
+  function renderTrajectory() {
+    if (!TJ.ready) {
+      TJ.ready = true;
+      ensureNameIndex();
+      $("#tj-add").addEventListener("change", () => {
+        const q = $("#tj-add").value.trim().toLowerCase();
+        const pid = _cmpByName[q];
+        if (pid == null) return;
+        if (!TJ.players.some((p) => p.pid === pid)) TJ.players.push({ pid });
+        $("#tj-add").value = "";
+        drawTrajectory();
+      });
+      ["#tj-proj", "#tj-opt", "#tj-band"].forEach((id) =>
+        $(id).addEventListener("change", drawTrajectory));
+      $("#tj-chips").addEventListener("click", (e) => {
+        const b = e.target.closest("[data-rm]");
+        if (b) { TJ.players = TJ.players.filter((p) => p.pid !== +b.dataset.rm); drawTrajectory(); }
+      });
+      if (!TJ.players.length) {
+        // seed with the current #1 so the page never opens empty
+        const best = D.players.filter((p) => !p.predictive && p._waaRank === 1)
+          .sort((a, b) => b.season - a.season)[0];
+        if (best) TJ.players.push({ pid: best.pid });
+      }
+    }
+    drawTrajectory();
+  }
+
+  function drawTrajectory() {
+    const years = +$("#tj-proj").value;
+    const optimal = +$("#tj-opt").value === 1;
+    const band = +$("#tj-band").value === 1;
+    const careers = TJ.players.map((p) => tjCareer(p.pid)).filter(Boolean);
+    $("#tj-chips").innerHTML = careers.map((c, i) =>
+      `<button class="comp-chip" data-rm="${c.last.pid}" style="border-color:${TJ_COLORS[i % TJ_COLORS.length]}">` +
+      `${c.name}<small>✕</small></button>`).join("");
+    destroy("tj");
+    if (!careers.length) {
+      $("#tj-note").textContent = "Type a name above to add a player.";
+      return;
+    }
+    const ds = [];
+    careers.forEach((c, i) => {
+      const col = TJ_COLORS[i % TJ_COLORS.length];
+      ds.push({ label: c.name, data: c.pts, borderColor: col, backgroundColor: col,
+                borderWidth: 2.2, pointRadius: 0, pointHitRadius: 6, tension: 0.25 });
+      if (years > 0) {
+        const proj = tjProjection(c, years, optimal);
+        ds.push({ label: `${c.name} (proj)`, data: proj.map((p) => ({ x: p.x, y: p.y })),
+                  borderColor: col, borderDash: [6, 5], borderWidth: 1.8, pointRadius: 2.5,
+                  pointBackgroundColor: col, fill: false });
+        if (band && i === 0) {
+          ds.push({ label: "_hi", data: proj.map((p) => ({ x: p.x, y: p.hi })),
+                    borderColor: "transparent", pointRadius: 0, fill: false });
+          ds.push({ label: "_lo", data: proj.map((p) => ({ x: p.x, y: p.lo })),
+                    borderColor: "transparent", pointRadius: 0, fill: "-1",
+                    backgroundColor: "rgba(20,19,16,.08)" });
+        }
+      }
+    });
+    charts.tj = new Chart($("#tj-chart"), {
+      type: "line",
+      data: { datasets: ds },
+      options: {
+        maintainAspectRatio: false, animation: false, parsing: false,
+        interaction: { mode: "nearest", intersect: false },
+        plugins: {
+          legend: { labels: { filter: (it) => !it.text.startsWith("_"),
+                              font: { family: "ui-monospace, Menlo, monospace", size: 11 } } },
+          tooltip: { callbacks: {
+            title: (its) => its.length ? seasonLabel(Math.ceil(its[0].parsed.x)) : "",
+            label: (it) => it.dataset.label.startsWith("_") ? null
+              : `${it.dataset.label}: ${signed(it.parsed.y, 1)} / 100 poss`,
+          } },
+        },
+        scales: {
+          x: { type: "linear", ticks: { stepSize: 1, callback: (v) => Number.isInteger(v) ? seasonLabel(v) : "",
+               font: { family: "ui-monospace, Menlo, monospace", size: 10 } }, grid: { color: "rgba(20,19,16,.07)" } },
+          y: { title: { display: true, text: "BOOKER (+/- per 100 poss)" },
+               grid: { color: "rgba(20,19,16,.07)" } },
+        },
+      },
+    });
+    $("#tj-note").textContent = `Solid = rating as each season's evidence accumulates. Dashed = ${years}-year projection along the aging curve`
+      + (optimal ? " at OPTIMAL usage (adds the un-credited role upside)" : " in the current role")
+      + (band ? "; shaded band = ±1σ rating uncertainty (first player), widening with horizon." : ".");
+    // decision read
+    const vp = $("#tj-verdict-panel");
+    if (years > 0 && careers.length >= 1) {
+      vp.hidden = false;
+      const reads = careers.map((c, i) => {
+        const proj = tjProjection(c, years, optimal);
+        const avg = proj.slice(1).reduce((a, p) => a + p.y, 0) / years;
+        const dir = proj[years].y - proj[0].y;
+        const trend = dir > 0.4 ? "ascending" : dir < -0.4 ? "declining" : "flat";
+        return { name: c.name, avg, trend, now: proj[0].y, color: TJ_COLORS[i % TJ_COLORS.length] };
+      }).sort((a, b) => b.avg - a.avg);
+      $("#tj-verdict").innerHTML = reads.map((r, i) =>
+        `<div class="tj-verdict-row"><span class="tj-rank">${i + 1}</span>` +
+        `<span class="tj-name" style="border-left:3px solid ${r.color};padding-left:8px">${r.name}</span>` +
+        `<span>now ${signed(r.now, 1)}</span><span>avg next ${years}y <b>${signed(r.avg, 1)}</b></span>` +
+        `<span class="${r.trend === "ascending" ? "pos" : r.trend === "declining" ? "neg" : ""}">${r.trend}</span></div>`).join("") +
+        `<p class="result-note">Ranked by projected average BOOKER over the window — the "who do you want for the next ${years} years" read. Toggle role scenario / horizon above to stress-test the decision.</p>`;
+    } else vp.hidden = true;
   }
 
   function renderTrade() {

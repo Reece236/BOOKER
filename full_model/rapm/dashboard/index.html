@@ -20,6 +20,7 @@
     <button class="tab" data-view="forecast">Win Forecast</button>
     <button class="tab" data-view="trade">Trade Machine</button>
     <button class="tab" data-view="lineup">Lineup Lab</button>
+    <button class="tab" data-view="trajectory">Trajectory</button>
     <button class="tab" data-view="leaders">Stat Leaders</button>
     <button class="tab" data-view="matchups">Matchups</button>
     <button class="tab" data-view="gameodds">Game Odds</button>
@@ -66,7 +67,9 @@
     <div class="breakdown-grid">
       <div class="panel">
         <h3 class="panel-title">Skill profile <span class="panel-hint" id="skill-season-note"></span>
-          <select id="skill-compare" class="cmp-sel" title="Head-to-head skill comparison"><option value="">Compare with…</option></select></h3>
+          <span class="cmp-wrap"><input id="skill-compare" class="cmp-sel" type="search" list="cmp-datalist"
+            placeholder="Compare with…" autocomplete="off" title="Head-to-head skill comparison — type a name" />
+          <datalist id="cmp-datalist"></datalist></span></h3>
         <div id="skill-bars"></div>
       </div>
       <div class="panel">
@@ -239,6 +242,31 @@
       <div class="panel"><h3 class="panel-title">Rotation <span class="panel-hint">set each player's minutes; 0 benches him</span></h3>
         <div id="ll-roster"></div></div>
       <div class="panel"><h3 class="panel-title">Projection</h3><div id="ll-out"></div></div>
+    </div>
+  </section>
+
+  <!-- TRAJECTORY ------------------------------------------------------- -->
+  <section id="view-trajectory" class="view" hidden>
+    <h2 class="page-head">Career Trajectory</h2>
+    <p class="lede">BOOKER score over a career — rating updated as each season's evidence accumulates — with forward projections. Add players to compare.</p>
+    <div class="controls">
+      <div class="ctrl grow"><label for="tj-add">Add player</label>
+        <input id="tj-add" list="cmp-datalist" type="search" placeholder="type a name…" autocomplete="off" /></div>
+      <div class="ctrl"><label for="tj-proj">Project ahead</label>
+        <select id="tj-proj"><option value="3">3 years</option><option value="1">1 year</option><option value="5">5 years</option><option value="0">off</option></select></div>
+      <div class="ctrl"><label for="tj-opt">Role scenario</label>
+        <select id="tj-opt"><option value="0">as used</option><option value="1">optimal usage</option></select></div>
+      <div class="ctrl"><label for="tj-band">Uncertainty</label>
+        <select id="tj-band"><option value="1">band on</option><option value="0">band off</option></select></div>
+    </div>
+    <div id="tj-chips" class="comps-wrap"></div>
+    <div class="panel">
+      <div class="chart-box tall"><canvas id="tj-chart"></canvas></div>
+      <p class="result-note" id="tj-note"></p>
+    </div>
+    <div class="panel" id="tj-verdict-panel" hidden>
+      <h3 class="panel-title">Decision read <span class="panel-hint">projected value over the window</span></h3>
+      <div id="tj-verdict"></div>
     </div>
   </section>
 
