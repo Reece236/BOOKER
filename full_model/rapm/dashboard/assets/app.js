@@ -187,6 +187,16 @@
       html += `<div class="vderiv-line"><span class="${over ? "neg" : under ? "pos" : ""}">${verdict}</span>` +
         `<b class="${rl.upside >= 0 ? "pos" : "neg"}">${signed(rl.upside, 1)}/100</b></div>`;
     }
+    if (row.clutch) {
+      const c = row.clutch, d = 100 * (c.tsC - c.tsN);
+      const read = d > 1 ? "rises when it tightens" : d < -5 ? "big efficiency drop under the heaviest defense"
+        : "league-typical dip (primary options absorb the hardest shots)";
+      html += `<div class="vderiv-sec">Crunch time <em>(last 5 min of a ≤5-pt game, pooled 2018-25)</em></div>`;
+      html += `<div class="vderiv-line"><span>Clutch volume</span><b>${c.tsaC} true-shot att</b></div>`;
+      html += `<div class="vderiv-line"><span>TS% normal → clutch</span>` +
+        `<b>${(100 * c.tsN).toFixed(1)} → ${(100 * c.tsC).toFixed(1)} <span class="${d >= 0 ? "pos" : "neg"}">(${d >= 0 ? "+" : ""}${d.toFixed(1)})</span></b></div>`;
+      html += `<div class="vderiv-line"><span>${read}</span><b title="league average clutch TS delta is −1.4; the game itself gets ~5 pts/100 harder">lg −1.4</b></div>`;
+    }
     $("#value-derivation").innerHTML = html;
   }
   // skill percentile trajectories across a player's seasons
