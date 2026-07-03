@@ -1237,12 +1237,18 @@
         lo.push({ x, y: +(y - 1.96 * sd).toFixed(2) });
       }
       if (p.gameNets && p.gameNets.length) {
-        // anchor the cloud to the exact value the LINE plots (bookerScore), so the
-        // dots' mean sits on the curve regardless of score-definition drift.
+        // rolling FORM: exponentially-weighted moving average of per-game impact
+        // (10-game half-life -> ~83% of outings within +-5 of the rating), anchored
+        // to the plotted line value and seeded at last season's level, so dots read
+        // as "his demonstrated form at that point" -- slumps and heaters visible,
+        // single-game noise filtered.
+        const A = 1 - Math.pow(0.5, 1 / 10);
         const n = p.gameNets.length;
         const mean = p.gameNets.reduce((a, b) => a + b, 0) / n;
+        let f = start;                                  // seed at prior (last season)
         p.gameNets.forEach((g, i) => {
-          dots.push({ x: p.season - 1 + (i + 0.5) / n, y: +(g - mean + v).toFixed(1) });
+          f = f + A * ((g - mean + v) - f);
+          dots.push({ x: p.season - 1 + (i + 0.5) / n, y: +f.toFixed(1) });
         });
       }
       prev = v;
@@ -1320,8 +1326,8 @@
       // raw per-game on-court net (the noisy observable the model filters)
       if (c.dots.length) {
         ds.push({ label: "_dots", type: "scatter", data: c.dots,
-                  pointBackgroundColor: hexA(col, 0.18), pointBorderColor: "transparent",
-                  pointRadius: 1.8, pointHitRadius: 0 });
+                  pointBackgroundColor: hexA(col, 0.4), pointBorderColor: "transparent",
+                  pointRadius: 2.0, pointHitRadius: 0 });
       }
       // 95% band on the realized rating (every player)
       if (band) {
@@ -1368,7 +1374,7 @@
         },
       },
     });
-    $("#tj-note").textContent = `Dots = game-by-game impact: each game's on-court net minus what the other nine players + home court predict (his leave-one-out residual), anchored to the season rating. Solid = rating as each season's evidence accumulates. Dashed = ${years}-year projection along the aging curve`
+    $("#tj-note").textContent = `Dots = rolling form: a 10-game half-life moving average of game-by-game impact (each game's on-court net minus what the other nine players + home court predict), anchored to the season rating — slumps and heaters show, single-game noise doesn't. Solid = rating as evidence accumulates. Dashed = ${years}-year projection along the aging curve`
       + (optimal ? " at OPTIMAL usage (adds the un-credited role upside)" : " in the current role")
       + (band ? "; shaded = 95% credible band per player, widening with horizon." : ".");
     // decision read
