@@ -166,6 +166,11 @@
     if (booker != null) {
       html += `<div class="vderiv-sec">Skill rate &amp; value</div>`;
       html += `<div class="vderiv-line"><span>BOOKER <em>(+/- per 100 poss, avg starting-caliber context, usage → optimum)</em></span><b>${signed(booker, 1)}</b></div>`;
+      if (row.projNext != null) {
+        const d = row.projNext - (row.bfTot100 != null ? row.bfTot100 : booker);
+        html += `<div class="vderiv-line"><span>BOOKER-PROJ <em>(next-season forecast: skills + form + aging)</em></span>` +
+          `<b>${signed(row.projNext, 1)} <span class="${d >= 0 ? "pos" : "neg"}" style="font-size:11px">(${signed(d, 1)})</span></b></div>`;
+      }
     }
     if (tv != null) {
       html += `<div class="vderiv-line"><span>True Value <em>(skill-based fair AAV)</em></span><b>${money(tv)}</b></div>`;
@@ -1258,18 +1263,29 @@
   }
 
   function tjProjection(career, years, optimal) {
-    // forward path along the aging curve from the last real rating; ages from the
-    // grade projection when present. "optimal usage" adds the remaining un-credited
+    // forward path: year 1 uses BOOKER-PROJ when available (the validated player
+    // forecast -- skills + form + aging beat the plain curve OOS); later years age
+    // along the curve from there. "optimal usage" adds the remaining un-credited
     // role upside (BOOKER already carries 25% of it).
     const last = career.last;
     let v = last.bookerScore;
-    if (optimal && last.role && last.role.upside) v += 0.75 * last.role.upside;
+    let projStep1 = null;
+    if (last.projNext != null) {
+      // PROJ is on the model-impact scale; shift by the same offset as the hybrid line
+      projStep1 = last.projNext + (last.bookerScore - (last.bfTot100 != null ? last.bfTot100 : last.bookerScore));
+    }
+    if (optimal && last.role && last.role.upside) {
+      v += 0.75 * last.role.upside;
+      if (projStep1 != null) projStep1 += 0.75 * last.role.upside;
+    }
     let age = (last.gradeProj && last.gradeProj[0] && last.gradeProj[0].age != null)
       ? last.gradeProj[0].age - 1 : null;
     const sd0 = (last.sdOff != null) ? Math.hypot(last.sdOff, last.sdDef) : 1.5;
     const out = [{ x: last.season, y: +v.toFixed(2), lo: v, hi: v }];
     for (let k = 1; k <= years; k++) {
-      if (age != null) {
+      if (k === 1 && projStep1 != null) {
+        v = projStep1;                              // year 1 = BOOKER-PROJ forecast
+      } else if (age != null) {
         const a1 = age + k, a0 = age + k - 1;
         v += AGE_QUAD_TJ * ((a1 - AGE_PEAK_TJ) ** 2 - (a0 - AGE_PEAK_TJ) ** 2);
       }
