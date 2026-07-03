@@ -284,8 +284,6 @@
       cell: (r) => `<span class="rankcell" title="rank blends value delivered (WAA) with per-minute quality (BOOKER rate), 50/50 by season z-score">${r._waaRank != null ? r._waaRank : "—"}</span>` },
     { key: "player", label: "Player", text: true, cell: (r) => `<span class="namecell">${r.player}</span>` },
     { key: "team", label: "Team", text: true, cell: (r) => `<span class="team-tag">${r.team}</span>` },
-    { key: "scarcityPct", label: "Rarity", cell: (r) => r.scarcityPct != null
-      ? `<span title="profile rarity — how unusual this player's style is vs the league (PCA-space density)">${r.scarcityPct}</span>` : "—" },
     { key: "season", label: "Season", cell: (r) => seasonLabel(r.season) },
     { key: "grade", label: "Grade", text: true,
       cell: (r) => r.grade != null ? `<span class="grade grade-${(r.gradeLetter||"").replace("+","p").replace("-","m")}" title="sticky age-curved team-independent grade">${r.gradeLetter} <small>${r.grade}</small></span>` : "\u2014" },
@@ -296,15 +294,12 @@
       ? `<span class="${r.waaOff >= 0 ? "pos" : "neg"}" title="Offensive WAA">${signed(r.waaOff, 1)}</span>` : "\u2014" },
     { key: "waaDef", label: "Def", cell: (r) => r.waaDef != null
       ? `<span class="${r.waaDef >= 0 ? "pos" : "neg"}" title="Defensive WAA">${signed(r.waaDef, 1)}</span>` : "\u2014" },
-    { key: "real_pm", label: "Real +/-", cell: (r) => r.real_pm != null
-      ? `<span class="${r.real_pm >= 0 ? "pos" : "neg"}" title="Actual on-court net rating /100 possessions (descriptive; for isolated impact use BOOKER)">${signed(r.real_pm, 1)}</span>` : "\u2014" },
-    { key: "tm_quality", label: "Tm Q", cell: (r) => r.tm_quality != null
-      ? `<span title="Avg teammate rating on court with him (impact/100) -- supporting cast">${signed(r.tm_quality, 1)}</span>` : "\u2014" },
-    { key: "opp_quality", label: "Opp Q", cell: (r) => r.opp_quality != null
-      ? `<span title="Avg opponent rating on court against him (impact/100) -- competition faced">${signed(r.opp_quality, 1)}</span>` : "\u2014" },
-    { key: "waaEnhanced", label: "Enh WAA", cell: (r) => r.waaEnhanced != null
-      ? `<span class="${r.waaEnhanced >= 0 ? "pos" : "neg"}" title="Prior teammate-fit ridge model (enhanced), shown for comparison. Click to sort and compare orderings.">${signed(r.waaEnhanced, 1)}</span>`
-      : "\u2014" },
+    { key: "real_pm", label: "Real +/-", cell: (r) => {
+        if (r.real_pm == null) return "\u2014";
+        const ctx = (r.tm_quality != null && r.opp_quality != null)
+          ? ` \u2014 teammates ${signed(r.tm_quality, 1)}, opponents ${signed(r.opp_quality, 1)} (avg on-court rating)` : "";
+        return `<span class="${r.real_pm >= 0 ? "pos" : "neg"}" title="Actual on-court net /100 (descriptive; for isolated impact use BOOKER)${ctx}">${signed(r.real_pm, 1)}</span>`;
+      } },
     { key: "trueValue", label: "True Value", cell: (r) => (r.trueValue != null ? r.trueValue : r.fairAav2026) != null
       ? `<span title="Skill-based fair AAV: predicted from BOOKER score with the market's age penalty removed.">${money(r.trueValue != null ? r.trueValue : r.fairAav2026)}</span>` : "\u2014" },
     { key: "marketAav2026", label: "Contract", cell: (r) => r.marketAav2026 != null ? money(r.marketAav2026) : "\u2014" },
@@ -1216,25 +1211,41 @@
   const TJ_COLORS = ["#141310", "#7a2820", "#3d5a80", "#6b8e23", "#8b5e83", "#b8860b"];
   const AGE_PEAK_TJ = 27.0, AGE_QUAD_TJ = -0.03;
 
+  function hexA(hex, a) {
+    const n = parseInt(hex.slice(1), 16);
+    return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
+  }
   function tjCareer(pid) {
     // realized seasons only, with the in-season evidence glide: the rating shown at
     // fraction t of season s is prior + (posterior - prior)·t -- the Bayesian update
-    // path as games accumulate (prior = last season's rating).
+    // path as games accumulate (prior = last season's rating). Also collects the raw
+    // per-game on-court nets (scatter) and a 95% band from each season's rating sd.
     const ss = D.players.filter((p) => p.pid === pid && !p.predictive && p.bookerScore != null)
       .sort((a, b) => a.season - b.season);
     if (!ss.length) return null;
-    const pts = [];
+    const pts = [], hi = [], lo = [], dots = [];
     let prev = null;
     ss.forEach((p) => {
       const v = p.bookerScore;
       const start = prev == null ? v : prev;
+      const sd = (p.sdOff != null) ? Math.hypot(p.sdOff, p.sdDef) : 1.5;
       for (let t = 0; t <= 1.0001; t += 0.25) {
-        pts.push({ x: p.season - 1 + t, y: +(start + (v - start) * t).toFixed(2) });
+        const x = p.season - 1 + t;
+        const y = start + (v - start) * t;
+        pts.push({ x, y: +y.toFixed(2) });
+        hi.push({ x, y: +(y + 1.96 * sd).toFixed(2) });
+        lo.push({ x, y: +(y - 1.96 * sd).toFixed(2) });
+      }
+      if (p.gameNets && p.gameNets.length) {
+        const n = p.gameNets.length;
+        p.gameNets.forEach((g, i) => {
+          dots.push({ x: p.season - 1 + (i + 0.5) / n, y: g });
+        });
       }
       prev = v;
     });
     const last = ss[ss.length - 1];
-    return { pts, last, name: last.player, seasons: ss };
+    return { pts, hi, lo, dots, last, name: last.player, seasons: ss };
   }
 
   function tjProjection(career, years, optimal) {
@@ -1253,7 +1264,7 @@
         const a1 = age + k, a0 = age + k - 1;
         v += AGE_QUAD_TJ * ((a1 - AGE_PEAK_TJ) ** 2 - (a0 - AGE_PEAK_TJ) ** 2);
       }
-      const sd = sd0 * (1 + 0.25 * k);
+      const sd = 1.96 * sd0 * (1 + 0.25 * k);      // 95% band, widening with horizon
       out.push({ x: last.season + k, y: +v.toFixed(2), lo: +(v - sd).toFixed(2), hi: +(v + sd).toFixed(2) });
     }
     return out;
@@ -1303,20 +1314,32 @@
     const ds = [];
     careers.forEach((c, i) => {
       const col = TJ_COLORS[i % TJ_COLORS.length];
+      // raw per-game on-court net (the noisy observable the model filters)
+      if (c.dots.length) {
+        ds.push({ label: "_dots", type: "scatter", data: c.dots,
+                  pointBackgroundColor: hexA(col, 0.18), pointBorderColor: "transparent",
+                  pointRadius: 1.8, pointHitRadius: 0 });
+      }
+      // 95% band on the realized rating (every player)
+      if (band) {
+        ds.push({ label: "_hi", data: c.hi, borderColor: "transparent", pointRadius: 0, fill: false });
+        ds.push({ label: "_lo", data: c.lo, borderColor: "transparent", pointRadius: 0,
+                  fill: "-1", backgroundColor: hexA(col, 0.09) });
+      }
       ds.push({ label: c.name, data: c.pts, borderColor: col, backgroundColor: col,
                 borderWidth: 2.2, pointRadius: 0, pointHitRadius: 6, tension: 0.25 });
       if (years > 0) {
         const proj = tjProjection(c, years, optimal);
-        ds.push({ label: `${c.name} (proj)`, data: proj.map((p) => ({ x: p.x, y: p.y })),
-                  borderColor: col, borderDash: [6, 5], borderWidth: 1.8, pointRadius: 2.5,
-                  pointBackgroundColor: col, fill: false });
-        if (band && i === 0) {
+        if (band) {
           ds.push({ label: "_hi", data: proj.map((p) => ({ x: p.x, y: p.hi })),
                     borderColor: "transparent", pointRadius: 0, fill: false });
           ds.push({ label: "_lo", data: proj.map((p) => ({ x: p.x, y: p.lo })),
                     borderColor: "transparent", pointRadius: 0, fill: "-1",
-                    backgroundColor: "rgba(20,19,16,.08)" });
+                    backgroundColor: hexA(col, 0.07) });
         }
+        ds.push({ label: `${c.name} (proj)`, data: proj.map((p) => ({ x: p.x, y: p.y })),
+                  borderColor: col, borderDash: [6, 5], borderWidth: 1.8, pointRadius: 2.5,
+                  pointBackgroundColor: col, fill: false });
       }
     });
     charts.tj = new Chart($("#tj-chart"), {
@@ -1342,9 +1365,9 @@
         },
       },
     });
-    $("#tj-note").textContent = `Solid = rating as each season's evidence accumulates. Dashed = ${years}-year projection along the aging curve`
+    $("#tj-note").textContent = `Dots = actual game-by-game on-court net (the raw signal the model filters). Solid = rating as each season's evidence accumulates. Dashed = ${years}-year projection along the aging curve`
       + (optimal ? " at OPTIMAL usage (adds the un-credited role upside)" : " in the current role")
-      + (band ? "; shaded band = ±1σ rating uncertainty (first player), widening with horizon." : ".");
+      + (band ? "; shaded = 95% credible band per player, widening with horizon." : ".");
     // decision read
     const vp = $("#tj-verdict-panel");
     if (years > 0 && careers.length >= 1) {
