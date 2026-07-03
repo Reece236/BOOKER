@@ -1237,9 +1237,12 @@
         lo.push({ x, y: +(y - 1.96 * sd).toFixed(2) });
       }
       if (p.gameNets && p.gameNets.length) {
+        // anchor the cloud to the exact value the LINE plots (bookerScore), so the
+        // dots' mean sits on the curve regardless of score-definition drift.
         const n = p.gameNets.length;
+        const mean = p.gameNets.reduce((a, b) => a + b, 0) / n;
         p.gameNets.forEach((g, i) => {
-          dots.push({ x: p.season - 1 + (i + 0.5) / n, y: g });
+          dots.push({ x: p.season - 1 + (i + 0.5) / n, y: +(g - mean + v).toFixed(1) });
         });
       }
       prev = v;
