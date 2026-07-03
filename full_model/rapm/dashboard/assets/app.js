@@ -1365,7 +1365,7 @@
         },
       },
     });
-    $("#tj-note").textContent = `Dots = actual game-by-game on-court net (the raw signal the model filters). Solid = rating as each season's evidence accumulates. Dashed = ${years}-year projection along the aging curve`
+    $("#tj-note").textContent = `Dots = game-by-game impact: each game's on-court net minus what the other nine players + home court predict (his leave-one-out residual), anchored to the season rating. Solid = rating as each season's evidence accumulates. Dashed = ${years}-year projection along the aging curve`
       + (optimal ? " at OPTIMAL usage (adds the un-credited role upside)" : " in the current role")
       + (band ? "; shaded = 95% credible band per player, widening with horizon." : ".");
     // decision read
