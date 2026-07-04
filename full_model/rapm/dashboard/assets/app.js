@@ -320,11 +320,13 @@
     { key: "surplus", label: "Surplus", cell: (r) => r.surplus != null
       ? `<span class="${r.surplus >= 0 ? "pos" : "neg"}" title="True Value minus actual contract">${money(r.surplus)}</span>` : "\u2014" },
   ];
-  // WAA-column value: ACCUMULATED WAA for actual seasons; WAA per 1500 minutes for
-  // FUTURE (projection) seasons, where minutes are speculative so a rate is fair.
+  // WAA-column value: ACCUMULATED WAA everywhere. Projection rows used to show a
+  // per-1500-min rate ("minutes are speculative"), but year-1 minutes now come
+  // from actual roster projections, and the rate ranking floated small-sample
+  // bench guys (825-min Paul Reed at #6) over stars. Projected value = rate x
+  // projected availability.
   function rv(p) {
-    const w = p.waaModel != null ? p.waaModel : (p.waa || 0);
-    return (p.predictive && p.min > 0) ? w * 1500 / p.min : w;
+    return p.waaModel != null ? p.waaModel : (p.waa || 0);
   }
   // Rank (#): blend of value delivered and per-minute quality -- 0.5·z(WAA) +
   // 0.5·z(BOOKER rate) within each season. Pure accumulated WAA turns a partial
@@ -354,7 +356,7 @@
     const v = rv(r);
     const w = Math.max(0, (v / maxWaa) * 100);
     const c = v >= 0 ? "pos" : "neg";
-    const per = r.predictive ? " per 1500 min (projection)" : "";
+    const per = r.predictive ? " projected (at projected minutes)" : "";
     const ci = (r.bfOff100 != null && r.sdOff != null)
       ? ` — rating/100 Off ${signed(r.bfOff100, 1)}±${(1.96 * r.sdOff).toFixed(1)}, Def ${signed(r.bfDef100, 1)}±${(1.96 * r.sdDef).toFixed(1)}` : "";
     return `<span class="bar-cell" title="WAA${per}${ci}"><span class="bar" style="width:${w}%"></span>` +
