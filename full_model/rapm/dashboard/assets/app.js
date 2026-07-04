@@ -27,6 +27,15 @@
     if (!nums.length) return;
     sel.value = String(nums.includes(lastFull) ? lastFull : Math.max.apply(null, nums));
   }
+  // Forward-facing pages lead with the UPCOMING season's projection when one
+  // exists (the product's headline is the forecast, not the retrospective).
+  function defaultProjSeason(sel) {
+    const nums = Array.from(sel.options).map((o) => Number(o.value)).filter((n) => !isNaN(n));
+    if (!nums.length) return;
+    const proj = lastFull + 1;
+    sel.value = String(nums.includes(proj) ? proj
+      : nums.includes(lastFull) ? lastFull : Math.max.apply(null, nums));
+  }
 
   /* ---- savant-style percentile color + skill / value rendering --------- */
   // diverging ramp: low percentile = cool blue, mid = grey, high = warm red
@@ -385,6 +394,14 @@
   }
   function renderLB() {
     const rows = lbFilter();
+    // forward-facing header: make it explicit when the board is a projection
+    const sv = +$("#f-season").value;
+    const head = $("#view-leaderboard .page-head");
+    if (head) {
+      head.textContent = (!isNaN(sv) && sv > lastFull)
+        ? `Projected Player Value · ${seasonLabel(sv)} (BOOKER-PROJ)`
+        : "Player Wins Above Average";
+    }
     const thead = $("#lb-table thead");
     thead.innerHTML = "<tr>" + LB_COLS.map((c) => {
       const arr = lbSort.key === c.key ? `<span class="arrow">${lbSort.dir < 0 ? "\u25BC" : "\u25B2"}</span>` : "";
@@ -422,7 +439,8 @@
   function initFilters() {
     $("#f-season").innerHTML = `<option value="all">All seasons</option>` +
       D.seasons.slice().reverse().map((s) => `<option value="${s}">${seasonLabel(s)}</option>`).join("");
-    $("#f-season").value = String(lastFull);
+    // land on the upcoming season's projections (forward-facing default)
+    $("#f-season").value = String(D.seasons.includes(lastFull + 1) ? lastFull + 1 : lastFull);
     const teams = Array.from(new Set(D.players.map((p) => p.team))).sort();
     $("#f-team").innerHTML = `<option value="">All teams</option>` +
       teams.map((t) => `<option value="${t}">${t} \u2014 ${teamName(t)}</option>`).join("");
@@ -725,7 +743,7 @@
       const yrs = Array.from(new Set(D.preseason.map((p) => p.season))).sort((a, b) => b - a);
       sel.innerHTML = yrs.map((s) => `<option value="${s}">${seasonLabel(s)}</option>`).join("");
       sel.addEventListener("change", drawPreseason);
-      defaultSeason(sel);
+      defaultProjSeason(sel);   // the preseason page IS the forecast: open on 2027
       sel.dataset.init = "1";
     }
     drawPreseason();
