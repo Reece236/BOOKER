@@ -1133,7 +1133,9 @@
         const imp = p.bfTot100 != null ? p.bfTot100 : (p.bfOff100 || 0) + (p.bfDef100 || 0);
         best[p.pid] = {
           pid: p.pid, player: p.player, team: "FA", season: p.season,
-          minutes: Math.min(2200, Math.max(1000, p.min || 1500)),
+          // seed with the projected 2027 workload (gated minutes model), not a flat guess
+          minutes: Math.round(p.projMin != null ? p.projMin
+                              : Math.min(2200, Math.max(1000, p.min || 1500))),
           impactTotal: imp, waaTotal: p.waa || 0, marketAav2026: p.marketAav2026 || p.fairAav2026 || 0,
           gradeOff: p.gradeOff, gradeDef: p.gradeDef, age: p.age,
         };
@@ -1169,7 +1171,13 @@
         const nm = $("#ll-add").value.trim().toLowerCase();
         const hit = Object.values(all).find((p) => p.player.toLowerCase() === nm);
         if (hit && LL && !LL.roster.some((r) => r.pid === hit.pid)) {
-          LL.roster.push({ pid: hit.pid, player: hit.player, impactTotal: hit.impactTotal, minutes: 1500 });
+          // seed with the player's projected 2027 minutes (gated model), not 1500 flat
+          let pm = null;
+          (D.players || []).forEach((p) => {
+            if (p.pid === hit.pid && p.projMin != null) pm = p.projMin;
+          });
+          LL.roster.push({ pid: hit.pid, player: hit.player, impactTotal: hit.impactTotal,
+                           minutes: Math.round(pm != null ? pm : 1500) });
           $("#ll-add").value = ""; llRenderRoster(); llRecompute();
         }
       });
