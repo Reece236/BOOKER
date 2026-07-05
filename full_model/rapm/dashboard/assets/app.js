@@ -70,11 +70,7 @@
       return;
     }
     if (note) note.textContent = `${seasonLabelFull(row.season)}`;
-    const order = ["offense", "defense", "three_pct", "rim_finish", "efficiency", "shot_making",
-                   "free_throw", "self_creation", "off_gravity", "on_gravity", "playmaking",
-                   "creation", "foul_draw", "ball_security", "rebounding", "steals", "rim_protect",
-                   "discipline", "rim_contest", "perimeter_contest", "rim_deterrence",
-                   "make_limiting", "shot_difficulty", "usage"];
+    const order = SKILL_ORDER;
     const rows = order.filter((k) => row.skills[k]).map((k) => {
       const s = row.skills[k];
       return `<div class="skill-row" title="${skillTitle(s)}">` +
@@ -1285,8 +1281,9 @@
   function tjProjection(career, years, optimal) {
     // forward path: year 1 uses BOOKER-PROJ when available (the validated player
     // forecast -- skills + form + aging beat the plain curve OOS); later years age
-    // along the curve from there. "optimal usage" adds the remaining un-credited
-    // role upside (BOOKER already carries 25% of it).
+    // along the curve from there. "optimal usage" adds the FULL role upside as a
+    // hypothetical (the rating carries none of it since the re-role credit was
+    // retired: OOS, misused players do not cash this -- treat as a what-if).
     const last = career.last;
     let v = last.bookerScore;
     let projStep1 = null;
@@ -1295,8 +1292,8 @@
       projStep1 = last.projNext + (last.bookerScore - (last.bfTot100 != null ? last.bfTot100 : last.bookerScore));
     }
     if (optimal && last.role && last.role.upside) {
-      v += 0.75 * last.role.upside;
-      if (projStep1 != null) projStep1 += 0.75 * last.role.upside;
+      v += last.role.upside;
+      if (projStep1 != null) projStep1 += last.role.upside;
     }
     let age = (last.gradeProj && last.gradeProj[0] && last.gradeProj[0].age != null)
       ? last.gradeProj[0].age - 1 : null;
@@ -1319,6 +1316,17 @@
     if (!TJ.ready) {
       TJ.ready = true;
       ensureNameIndex();
+      // metric picker: BOOKER (full machinery) or any true skill's career arc
+      const have = {};
+      D.players.forEach((p) => {
+        if (p.skills) for (const k in p.skills) if (!have[k]) have[k] = p.skills[k].label;
+      });
+      $("#tj-metric").innerHTML =
+        `<option value="booker">BOOKER rating</option>` +
+        `<option value="off">Offense rating /100</option>` +
+        `<option value="def">Defense rating /100</option>` +
+        SKILL_ORDER.filter((k) => have[k] && k !== "offense" && k !== "defense")
+          .map((k) => `<option value="${k}">${have[k]}</option>`).join("");
       $("#tj-add").addEventListener("change", () => {
         const q = $("#tj-add").value.trim().toLowerCase();
         const pid = _cmpByName[q];
@@ -1327,7 +1335,7 @@
         $("#tj-add").value = "";
         drawTrajectory();
       });
-      ["#tj-proj", "#tj-opt", "#tj-band"].forEach((id) =>
+      ["#tj-metric", "#tj-proj", "#tj-opt", "#tj-band"].forEach((id) =>
         $(id).addEventListener("change", drawTrajectory));
       $("#tj-chips").addEventListener("click", (e) => {
         const b = e.target.closest("[data-rm]");
@@ -1343,10 +1351,97 @@
     drawTrajectory();
   }
 
+  // season-level career arc for a non-BOOKER metric: O/D rating (with sd bands)
+  // or any true skill (season value + percentile; no glide/dots/projection --
+  // those are rating-specific machinery).
+  function tjSkillSeries(pid, metric) {
+    const ss = D.players.filter((p) => p.pid === pid && !p.predictive)
+      .sort((a, b) => a.season - b.season);
+    if (!ss.length) return null;
+    const pts = [], hi = [], lo = [];
+    let fmt = null, label = null;
+    ss.forEach((p) => {
+      let v = null, sd = null;
+      if (metric === "off") { v = p.bfOff100; sd = p.sdOff; label = "Offense rating (/100 poss)"; }
+      else if (metric === "def") { v = p.bfDef100; sd = p.sdDef; label = "Defense rating (/100 poss)"; }
+      else if (p.skills && p.skills[metric] && p.skills[metric].val != null) {
+        const s = p.skills[metric];
+        fmt = s.fmt; label = s.label;
+        v = s.fmt === "pct" ? s.val * 100 : s.val;
+      }
+      if (v == null) return;
+      pts.push({ x: p.season, y: +(+v).toFixed(2),
+                 pct: (p.skills && p.skills[metric]) ? p.skills[metric].pct : null });
+      if (sd != null) {
+        hi.push({ x: p.season, y: +(v + 1.96 * sd).toFixed(2) });
+        lo.push({ x: p.season, y: +(v - 1.96 * sd).toFixed(2) });
+      }
+    });
+    if (!pts.length) return null;
+    return { pts, hi, lo, name: ss[ss.length - 1].player, pid, fmt, label };
+  }
+
+  function drawSkillTrajectory(metric, band) {
+    const series = TJ.players.map((p) => tjSkillSeries(p.pid, metric)).filter(Boolean);
+    $("#tj-chips").innerHTML = series.map((c, i) =>
+      `<button class="comp-chip" data-rm="${c.pid}" style="border-color:${TJ_COLORS[i % TJ_COLORS.length]}">` +
+      `${c.name}<small>✕</small></button>`).join("");
+    destroy("tj");
+    $("#tj-verdict-panel").hidden = true;
+    if (!series.length) {
+      $("#tj-note").textContent = "No data for this metric for the selected players (skills need 500+ minutes).";
+      return;
+    }
+    const fmt = series[0].fmt, yLabel = series[0].label + (fmt === "pct" ? " (%)" : "");
+    const ds = [];
+    series.forEach((c, i) => {
+      const col = TJ_COLORS[i % TJ_COLORS.length];
+      if (band && c.hi.length) {
+        ds.push({ label: "_hi", data: c.hi, borderColor: "transparent", pointRadius: 0, fill: false });
+        ds.push({ label: "_lo", data: c.lo, borderColor: "transparent", pointRadius: 0,
+                  fill: "-1", backgroundColor: hexA(col, 0.09) });
+      }
+      ds.push({ label: c.name, data: c.pts, borderColor: col, backgroundColor: col,
+                borderWidth: 2.2, pointRadius: 3, pointHitRadius: 8, tension: 0.25 });
+    });
+    charts.tj = new Chart($("#tj-chart"), {
+      type: "line",
+      data: { datasets: ds },
+      options: {
+        maintainAspectRatio: false, animation: false, parsing: false,
+        interaction: { mode: "nearest", intersect: false },
+        plugins: {
+          legend: { labels: { filter: (it) => !it.text.startsWith("_"),
+                              font: { family: "ui-monospace, Menlo, monospace", size: 11 } } },
+          tooltip: { callbacks: {
+            title: (its) => its.length ? seasonLabel(Math.round(its[0].parsed.x)) : "",
+            label: (it) => {
+              if (it.dataset.label.startsWith("_")) return null;
+              const raw = it.raw || {};
+              const val = fmt === "pct" ? it.parsed.y.toFixed(1) + "%" : signed(it.parsed.y, 1);
+              return `${it.dataset.label}: ${val}` + (raw.pct != null ? ` · ${raw.pct}th pctile` : "");
+            },
+          } },
+        },
+        scales: {
+          x: { type: "linear", ticks: { stepSize: 1, callback: (v) => Number.isInteger(v) ? seasonLabel(v) : "",
+               font: { family: "ui-monospace, Menlo, monospace", size: 10 } }, grid: { color: "rgba(20,19,16,.07)" } },
+          y: { title: { display: true, text: yLabel }, grid: { color: "rgba(20,19,16,.07)" } },
+        },
+      },
+    });
+    $("#tj-note").textContent = `${yLabel} by season — difficulty/opportunity-adjusted true skill `
+      + `(tooltip shows the league percentile that season). Form dots, projections and the aging `
+      + `curve apply to the BOOKER rating metric only`
+      + (band && series.some((c) => c.hi.length) ? "; shaded = 95% credible band." : ".");
+  }
+
   function drawTrajectory() {
     const years = +$("#tj-proj").value;
     const optimal = +$("#tj-opt").value === 1;
     const band = +$("#tj-band").value === 1;
+    const metric = ($("#tj-metric") && $("#tj-metric").value) || "booker";
+    if (metric !== "booker") { drawSkillTrajectory(metric, band); return; }
     const careers = TJ.players.map((p) => tjCareer(p.pid)).filter(Boolean);
     $("#tj-chips").innerHTML = careers.map((c, i) =>
       `<button class="comp-chip" data-rm="${c.last.pid}" style="border-color:${TJ_COLORS[i % TJ_COLORS.length]}">` +
@@ -1411,7 +1506,7 @@
       },
     });
     $("#tj-note").textContent = `Dots = rolling form: a 10-game half-life moving average of game-by-game impact (each game's on-court net minus what the other nine players + home court predict), anchored to the season rating — slumps and heaters show, single-game noise doesn't. Solid = rating as evidence accumulates. Dashed = ${years}-year projection along the aging curve`
-      + (optimal ? " at OPTIMAL usage (adds the un-credited role upside)" : " in the current role")
+      + (optimal ? " at OPTIMAL usage (hypothetical re-role: adds the full skill-curve upside, which OOS evidence says misused players rarely cash — a what-if, not a forecast)" : " in the current role")
       + (band ? "; shaded = 95% credible band per player, widening with horizon." : ".");
     // decision read
     const vp = $("#tj-verdict-panel");
