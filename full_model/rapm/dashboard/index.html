@@ -7,32 +7,66 @@
 <link rel="stylesheet" href="assets/style.css" />
 </head>
 <body>
-<header class="masthead">
-  <div class="wrap mast-inner">
-    <div class="brand">
-      <span class="brand-mark">BOOKER</span>
-      <span class="brand-sub">Wins Above Average</span>
+<header class="appbar">
+  <div class="appbar-inner">
+    <span class="ab-logo"><span class="dot">B</span> BOOKER</span>
+    <div class="ab-search">
+      <input id="ab-search" list="cmp-datalist" type="search" placeholder="Search players…" autocomplete="off" />
     </div>
-    <div class="brand-est">2015&ndash;2027</div>
   </div>
-  <nav class="tabs wrap" id="tabs">
-    <button class="tab is-active" data-view="leaderboard">Leaderboard</button>
-    <button class="tab" data-view="forecast">Win Forecast</button>
-    <button class="tab" data-view="trade">Trade Machine</button>
-    <button class="tab" data-view="lineup">Lineup Lab</button>
-    <button class="tab" data-view="trajectory">Trajectory</button>
-    <button class="tab" data-view="leaders">Stat Leaders</button>
-    <button class="tab" data-view="matchups">Matchups</button>
-    <button class="tab" data-view="gameodds">Game Odds</button>
-    <button class="tab" data-view="diagnostics">Diagnostics</button>
-    <button class="tab" data-view="method">Methodology</button>
-  </nav>
 </header>
+<nav class="tabs" id="tabs">
+  <button class="tab is-active" data-view="matches"><span class="ico">🏀</span>Matches</button>
+  <button class="tab" data-view="standings"><span class="ico">📊</span>Table</button>
+  <button class="tab" data-view="leaderboard"><span class="ico">⭐</span>Players</button>
+  <button class="tab" data-view="teams"><span class="ico">🛡️</span>Teams</button>
+  <button class="tab" data-view="more"><span class="ico">☰</span>More</button>
+</nav>
 
 <main class="wrap">
-  <!-- LEADERBOARD ------------------------------------------------------ -->
-  <section id="view-leaderboard" class="view">
-    <h2 class="page-head">Player Wins Above Average</h2>
+  <!-- MATCHES (home) --------------------------------------------------- -->
+  <section id="view-matches" class="view">
+    <div class="datebar" id="fm-datebar"></div>
+    <div id="fm-matchdays"></div>
+  </section>
+
+  <!-- MATCH DETAIL ------------------------------------------------------ -->
+  <section id="view-match" class="view" hidden>
+    <button class="back" id="match-back">&larr; Matches</button>
+    <div id="fm-match-head"></div>
+    <div class="mtabs" id="fm-match-tabs"></div>
+    <div id="fm-match-body"></div>
+  </section>
+
+  <!-- TABLE (standings) --------------------------------------------------- -->
+  <section id="view-standings" class="view" hidden>
+    <h2 class="page-head">Table</h2>
+    <div class="conf-toggle" id="fm-stand-mode"></div>
+    <div id="fm-standings"></div>
+  </section>
+
+  <!-- TEAMS --------------------------------------------------------------- -->
+  <section id="view-teams" class="view" hidden>
+    <h2 class="page-head">Teams</h2>
+    <div class="teams-grid" id="fm-teams"></div>
+  </section>
+
+  <!-- TEAM DETAIL ----------------------------------------------------------- -->
+  <section id="view-team" class="view" hidden>
+    <button class="back" id="team-back">&larr; Teams</button>
+    <div id="fm-team-head"></div>
+    <div id="fm-team-body"></div>
+  </section>
+
+  <!-- MORE ------------------------------------------------------------------ -->
+  <section id="view-more" class="view" hidden>
+    <h2 class="page-head">More</h2>
+    <div class="more-grid" id="fm-more"></div>
+    <footer class="foot"><span id="foot-note"></span></footer>
+  </section>
+  <!-- PLAYERS (leaderboard) ---------------------------------------------- -->
+  <section id="view-leaderboard" class="view" hidden>
+    <h2 class="page-head">Players</h2>
     <div class="controls">
       <div class="ctrl">
         <label for="f-season">Season</label>
@@ -62,8 +96,12 @@
 
   <!-- PLAYER ----------------------------------------------------------- -->
   <section id="view-player" class="view" hidden>
-    <button class="back" id="player-back">&larr; Back to leaderboard</button>
+    <button class="back" id="player-back">&larr; Players</button>
     <div class="player-head" id="player-head"></div>
+    <div class="panel" id="player-matches-panel" hidden>
+      <h3 class="panel-title">Match ratings <span class="panel-hint">per-game impact on the FotMob 0–10 scale — what his lineups did beyond what the other nine predict</span></h3>
+      <div class="pm-strip" id="player-matches"></div>
+    </div>
     <div class="breakdown-grid">
       <div class="panel">
         <h3 class="panel-title">Skill profile <span class="panel-hint" id="skill-season-note"></span>
@@ -327,12 +365,6 @@
     <div class="prose" id="method-body"></div>
   </section>
 </main>
-
-<footer class="foot">
-  <div class="wrap">
-    <span id="foot-note"></span>
-  </div>
-</footer>
 
 <script src="assets/chart.umd.js"></script>
 <script src="data/data.js"></script>

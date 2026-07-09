@@ -235,7 +235,7 @@
 
   Chart.defaults.font.family = getComputedStyle(document.body).fontFamily;
   Chart.defaults.font.size = 12;
-  Chart.defaults.color = "#6f6044";
+  Chart.defaults.color = "#8b96a2";
   const COL = { ink: "#241c12", accent: "#7a2820", pos: "#2f5d34", neg: "#7a2820",
                grey: "#8a785a", grid: "#ddcca8", paper: "#f4ecd6" };
   const seasonLabelFull = (s) => `${s - 1}-${String(s).slice(2)}`;
@@ -248,10 +248,12 @@
     $$(".tab").forEach((t) => t.classList.toggle("is-active", t.dataset.view === name));
     window.scrollTo({ top: 0 });
   }
-  $("#tabs").addEventListener("click", (e) => {
-    const t = e.target.closest(".tab"); if (!t) return;
-    const v = t.dataset.view;
+  function routeView(v) {
     showView(v);
+    if (v === "matches") renderMatches();
+    if (v === "standings") renderStandings();
+    if (v === "teams") renderTeamsGrid();
+    if (v === "more") renderMore();
     if (v === "forecast") renderForecast();
     if (v === "trade") renderTrade();
     if (v === "lineup") renderLineup();
@@ -261,6 +263,10 @@
     if (v === "matchups") renderMatchup();
     if (v === "diagnostics") renderDiagnostics();
     if (v === "method") renderMethod();
+  }
+  $("#tabs").addEventListener("click", (e) => {
+    const t = e.target.closest(".tab"); if (!t) return;
+    routeView(t.dataset.view);
   });
 
   /* ===================================================================== *
@@ -541,6 +547,7 @@
   function openPlayer(pid) {
     const seasons = D.players.filter((p) => p.pid === pid).sort((a, b) => a.season - b.season);
     if (!seasons.length) return;
+    fmPlayerMatches(pid);              // FotMob per-game rating strip
     const name = seasons[seasons.length - 1].player;
     const teams = Array.from(new Set(seasons.map((s) => s.team)));
     const totWaa = seasons.reduce((a, s) => a + s.waa, 0);
@@ -1433,8 +1440,8 @@
         },
         scales: {
           x: { type: "linear", ticks: { stepSize: 1, callback: (v) => Number.isInteger(v) ? seasonLabel(v) : "",
-               font: { family: "ui-monospace, Menlo, monospace", size: 10 } }, grid: { color: "rgba(20,19,16,.07)" } },
-          y: { title: { display: true, text: yLabel }, grid: { color: "rgba(20,19,16,.07)" } },
+               font: { family: "ui-monospace, Menlo, monospace", size: 10 } }, grid: { color: "rgba(233,237,242,.07)" } },
+          y: { title: { display: true, text: yLabel }, grid: { color: "rgba(233,237,242,.07)" } },
         },
       },
     });
@@ -1507,9 +1514,9 @@
         },
         scales: {
           x: { type: "linear", ticks: { stepSize: 1, callback: (v) => Number.isInteger(v) ? seasonLabel(v) : "",
-               font: { family: "ui-monospace, Menlo, monospace", size: 10 } }, grid: { color: "rgba(20,19,16,.07)" } },
+               font: { family: "ui-monospace, Menlo, monospace", size: 10 } }, grid: { color: "rgba(233,237,242,.07)" } },
           y: { title: { display: true, text: "BOOKER (+/- per 100 poss)" },
-               grid: { color: "rgba(20,19,16,.07)" } },
+               grid: { color: "rgba(233,237,242,.07)" } },
         },
       },
     });
@@ -2086,11 +2093,353 @@
       <p style="color:var(--muted-2);font-size:12.5px">Data: NBA Stats API &amp; shufinskiy/nba_data play-by-play; Basketball-Reference box priors; historical closing moneylines (Sportsbook Review archive). Generated ${D.generated}.</p>`;
   }
 
+  /* ===================================================================== *
+   *  FOTMOB SHELL \u2014 Matches / Match / Table / Teams / More
+   * ===================================================================== */
+  const TEAM_COLOR = {
+    ATL:"#C8102E", BOS:"#007A33", BRK:"#5c5c66", CHI:"#CE1141", CHO:"#00788C",
+    CLE:"#860038", DAL:"#00538C", DEN:"#0E2240", DET:"#C8102E", GSW:"#1D428A",
+    HOU:"#CE1141", IND:"#FDBB30", LAC:"#C8102E", LAL:"#552583", MEM:"#5D76A9",
+    MIA:"#98002E", MIL:"#00471B", MIN:"#0C2340", NOP:"#0C2340", NYK:"#F58426",
+    OKC:"#007AC1", ORL:"#0077C0", PHI:"#006BB6", PHO:"#E56020", POR:"#E03A3E",
+    SAC:"#5A2D81", SAS:"#8a8d8f", TOR:"#CE1141", UTA:"#002B5C", WAS:"#002B5C",
+  };
+  const FM = { games: D.games || [], pg: D.playerGames || {}, gameR: null,
+               date: null, mtab: "ratings", curGi: null, standMode: "proj" };
+  const tmono = (ab, cls) =>
+    `<span class="tm ${cls || ""}" style="background:${TEAM_COLOR[ab] || "#555"}">${ab}</span>`;
+  const rbCls = (r) => r >= 9 ? "rb-blu" : r >= 8 ? "rb-brt" : r >= 7 ? "rb-grn" : r >= 6 ? "rb-org" : "rb-red";
+  const rbadge = (r, big) => r == null ? "" :
+    `<span class="rb ${big ? "big " : ""}${rbCls(r)}">${Number(r).toFixed(1)}</span>`;
+  const score10 = (imp) => Math.max(2, Math.min(10, 6.6 + 1.15 * Math.asinh((imp || 0) / 6)));
+  const dHuman = (iso) => {
+    const d = new Date(iso + "T12:00:00");
+    return d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+  };
+  // latest realized player row per pid (name/team lookups)
+  let _rowByPid = null;
+  function rowOf(pid) {
+    if (!_rowByPid) {
+      _rowByPid = {};
+      D.players.forEach((p) => {
+        if (p.predictive) return;
+        const c = _rowByPid[p.pid];
+        if (!c || p.season > c.season) _rowByPid[p.pid] = p;
+      });
+    }
+    return _rowByPid[pid];
+  }
+  function gameRatings(gi) {
+    if (!FM.gameR) {
+      FM.gameR = {};
+      Object.keys(FM.pg).forEach((pid) => {
+        FM.pg[pid].forEach(([g, r]) => (FM.gameR[g] = FM.gameR[g] || []).push([+pid, r]));
+      });
+    }
+    return FM.gameR[gi] || [];
+  }
+
+  /* ---- Matches ---------------------------------------------------------- */
+  function fmDates() {
+    if (FM._dates) return FM._dates;
+    FM._dates = Array.from(new Set(FM.games.map((g) => g.date))).sort();
+    return FM._dates;
+  }
+  function defaultDate() {
+    const played = FM.games.filter((g) => g.hPts != null).map((g) => g.date).sort();
+    return played.length ? played[played.length - 1] : fmDates()[0];
+  }
+  function renderMatches() {
+    if (!FM.date) FM.date = defaultDate();
+    const dates = fmDates();
+    const i = Math.max(0, dates.indexOf(FM.date));
+    const win = dates.slice(Math.max(0, i - 2), Math.min(dates.length, i + 3));
+    $("#fm-datebar").innerHTML =
+      `<button class="db-arrow" data-d="prev">&lsaquo;</button>` +
+      win.map((d) => `<button data-d="${d}" class="${d === FM.date ? "on" : ""}">${dHuman(d)}</button>`).join("") +
+      `<button class="db-arrow" data-d="next">&rsaquo;</button>`;
+    const gs = FM.games.map((g, gi) => ({ ...g, gi })).filter((g) => g.date === FM.date);
+    const season = gs.length ? gs[0].season : null;
+    $("#fm-matchdays").innerHTML =
+      `<div class="league-head">\ud83c\udfc0 NBA <small>${season ? seasonLabel(season) : ""}${gs.some((g) => g.type === "P") ? " \u00b7 Playoffs" : ""}</small></div>` +
+      `<div class="match-list">` + gs.map(matchRowHtml).join("") + `</div>`;
+  }
+  function matchRowHtml(g) {
+    const done = g.hPts != null;
+    const hw = done && g.hPts > g.aPts, aw = done && g.aPts > g.hPts;
+    const side = done
+      ? `<span class="ft">FT</span>${g.type === "P" ? `<span class="po">PLAYOFFS</span>` : ""}`
+      : (g.pHome != null
+          ? `<span class="when">${g.type === "P" ? "PO" : ""}</span><span class="odds">${Math.round(g.pHome * 100)}% \u00b7 ${Math.round((1 - g.pHome) * 100)}%</span>`
+          : `<span class="when">TBD</span>`);
+    return `<div class="match-row" data-gi="${g.gi}">
+      <div class="mr-teams">
+        <div class="mr-t ${done && !hw ? "loser" : ""}">${tmono(g.home)} ${teamName(g.home)}${done ? `<span class="pts">${g.hPts}</span>` : ""}</div>
+        <div class="mr-t ${done && !aw ? "loser" : ""}">${tmono(g.away)} ${teamName(g.away)}${done ? `<span class="pts">${g.aPts}</span>` : ""}</div>
+      </div>
+      <div class="mr-side">${side}</div></div>`;
+  }
+  $("#fm-datebar").addEventListener("click", (e) => {
+    const b = e.target.closest("button"); if (!b) return;
+    const dates = fmDates(), i = dates.indexOf(FM.date);
+    if (b.dataset.d === "prev") FM.date = dates[Math.max(0, i - 1)];
+    else if (b.dataset.d === "next") FM.date = dates[Math.min(dates.length - 1, i + 1)];
+    else FM.date = b.dataset.d;
+    renderMatches();
+  });
+  $("#fm-matchdays").addEventListener("click", (e) => {
+    const r = e.target.closest(".match-row"); if (r) openMatch(+r.dataset.gi);
+  });
+
+  /* ---- Match page -------------------------------------------------------- */
+  function openMatch(gi) {
+    FM.curGi = gi; FM.mtab = "ratings";
+    const g = FM.games[gi];
+    const done = g.hPts != null;
+    showView("match");
+    $("#fm-match-head").innerHTML = `<div class="mh"><div class="mh-row">
+      <div class="mh-team" data-t="${g.home}">${tmono(g.home, "xl")}<span>${teamName(g.home)}</span></div>
+      <div>${done ? `<div class="mh-score">${g.hPts} \u2013 ${g.aPts}</div><div class="mh-sub">Full time${g.type === "P" ? " \u00b7 Playoffs" : ""}</div>`
+                  : `<div class="mh-when">${dHuman(g.date)}</div><div class="mh-sub">${seasonLabel(g.season)}${g.type === "P" ? " \u00b7 Playoffs" : ""}</div>`}</div>
+      <div class="mh-team" data-t="${g.away}">${tmono(g.away, "xl")}<span>${teamName(g.away)}</span></div>
+    </div>${g.pHome != null ? probBarHtml(g) : ""}</div>`;
+    renderMatchTabs();
+  }
+  function probBarHtml(g) {
+    const p = g.pHome;
+    return `<div style="max-width:560px;margin:10px auto 0">
+      <div class="probbar"><span class="ph" style="flex:${p}"></span><span class="pa" style="flex:${1 - p}"></span></div>
+      <div class="prob-legend"><span>${g.home} ${(p * 100).toFixed(0)}%</span><span>model pre-game</span><span>${g.away} ${((1 - p) * 100).toFixed(0)}%</span></div>
+      ${g.mHome != null ? `<div class="prob-legend" style="margin-top:2px"><span>${g.home} ${(g.mHome * 100).toFixed(0)}%</span><span style="color:var(--muted-2)">market close</span><span>${g.away} ${((1 - g.mHome) * 100).toFixed(0)}%</span></div>` : ""}
+    </div>`;
+  }
+  function renderMatchTabs() {
+    const g = FM.games[FM.curGi];
+    const hasR = gameRatings(FM.curGi).length > 0;
+    const tabs = [];
+    if (hasR) tabs.push(["ratings", "Player ratings"]);
+    tabs.push(["preview", g.hPts != null ? "Model view" : "Preview"], ["h2h", "H2H"]);
+    if (!tabs.some((t) => t[0] === FM.mtab)) FM.mtab = tabs[0][0];
+    $("#fm-match-tabs").innerHTML = tabs.map(([k, l]) =>
+      `<button data-mt="${k}" class="${FM.mtab === k ? "on" : ""}">${l}</button>`).join("");
+    const body = $("#fm-match-body");
+    if (FM.mtab === "ratings") body.innerHTML = matchRatingsHtml(g);
+    else if (FM.mtab === "preview") body.innerHTML = matchPreviewHtml(g);
+    else body.innerHTML = matchH2HHtml(g);
+  }
+  function matchRatingsHtml(g) {
+    const rs = gameRatings(FM.curGi).slice().sort((a, b) => b[1] - a[1]);
+    if (!rs.length) return `<p class="result-note">No player tracking for this game (partial 2026 stint feed).</p>`;
+    const best = rs[0][0];
+    const side = (ab) => {
+      const rows = rs.filter(([pid]) => (rowOf(pid) || {}).team === ab);
+      return `<div class="rating-list" style="flex:1;min-width:260px">
+        <div class="rl-head">${tmono(ab)} ${teamName(ab)}</div>` +
+        rows.map(([pid, r]) => {
+          const p = rowOf(pid);
+          return `<div class="rl-row" data-pid="${pid}"><span class="nm">${p ? p.player : pid}</span>` +
+            `${pid === best ? `<span class="motm">\u2605 MOTM</span>` : ""}<span class="mn"></span>${rbadge(r)}</div>`;
+        }).join("") + `</div>`;
+    };
+    return `<div style="display:flex;gap:12px;flex-wrap:wrap">${side(g.home)}${side(g.away)}</div>
+      <p class="result-note">Rating = the game's leave-one-out lineup impact on a 0\u201310 scale (6.6 = league-average game). MOTM = highest-rated player on the floor.</p>`;
+  }
+  function matchPreviewHtml(g) {
+    const done = g.hPts != null;
+    const rows = [];
+    if (g.pHome != null) rows.push(`<div class="vderiv-line"><em>Model home win prob</em><b>${(g.pHome * 100).toFixed(1)}%</b></div>`);
+    if (g.mHome != null) rows.push(`<div class="vderiv-line"><em>Market close</em><b>${(g.mHome * 100).toFixed(1)}%</b></div>`);
+    if (g.pHome != null && g.mHome != null)
+      rows.push(`<div class="vderiv-line"><em>Model \u2212 market edge (home)</em><b class="${g.pHome > g.mHome ? "pos" : "neg"}">${((g.pHome - g.mHome) * 100).toFixed(1)}pp</b></div>`);
+    if (done && g.pHome != null) {
+      const hit = (g.pHome >= 0.5) === (g.hPts > g.aPts);
+      rows.push(`<div class="vderiv-line"><em>Result vs model</em><b class="${hit ? "pos" : "neg"}">${hit ? "model favorite won" : "upset vs model"}</b></div>`);
+    }
+    return `<div class="panel">${rows.join("") || `<p class="result-note">No model line for this game.</p>`}</div>`;
+  }
+  function matchH2HHtml(g) {
+    const pair = [g.home, g.away];
+    const met = FM.games.map((x, gi) => ({ ...x, gi }))
+      .filter((x) => pair.includes(x.home) && pair.includes(x.away) && x.hPts != null);
+    if (!met.length) return `<p class="result-note">No completed meetings in the data window.</p>`;
+    return `<div class="match-list">` + met.map(matchRowHtml).join("") + `</div>`;
+  }
+  $("#fm-match-tabs").addEventListener("click", (e) => {
+    const b = e.target.closest("button"); if (!b) return;
+    FM.mtab = b.dataset.mt; renderMatchTabs();
+  });
+  $("#fm-match-body").addEventListener("click", (e) => {
+    const r = e.target.closest(".rl-row"); if (r) { openPlayer(+r.dataset.pid); return; }
+    const m = e.target.closest(".match-row"); if (m) openMatch(+m.dataset.gi);
+  });
+  $("#fm-match-head").addEventListener("click", (e) => {
+    const t = e.target.closest(".mh-team"); if (t) openTeam(t.dataset.t);
+  });
+  $("#match-back").addEventListener("click", () => routeView("matches"));
+
+  /* ---- Table (standings) ------------------------------------------------- */
+  const CONF_E = new Set(["ATL","BOS","BRK","CHO","CHI","CLE","DET","IND","MIA","MIL","NYK","ORL","PHI","TOR","WAS"]);
+  function renderStandings() {
+    const modes = [["proj", `${seasonLabel(lastFull + 1)} projected`], ["final", `${seasonLabel(lastFull)} final`]];
+    $("#fm-stand-mode").innerHTML = modes.map(([k, l]) =>
+      `<button data-m="${k}" class="${FM.standMode === k ? "on" : ""}">${l}</button>`).join("");
+    const rows = FM.standMode === "proj" ? standProj() : standFinal();
+    const conf = (name, filter) => {
+      const rs = rows.filter((r) => filter(r.team));
+      rs.sort((a, b) => b.w - a.w || b.net - a.net);
+      return `<div class="stand"><div class="st-head"><span>#</span><span>Team</span><span>W</span><span>L</span>` +
+        `<span>${FM.standMode === "proj" ? "PO%" : "PCT"}</span><span class="netcol">NET</span>` +
+        `<span>${FM.standMode === "proj" ? "TITLE" : "FORM"}</span></div>` +
+        rs.map((r, i) => `<div class="st-row ${i < 6 ? "q-play" : i < 10 ? "q-pin" : ""}" data-t="${r.team}">
+          <span class="pos-n">${i + 1}</span>
+          <span class="tnm">${tmono(r.team)} ${teamName(r.team)}</span>
+          <span>${r.w}</span><span>${r.l}</span><span>${r.mid}</span>
+          <span class="netcol">${signed(r.net, 1)}</span>
+          <span style="text-align:right">${r.last}</span></div>`).join("") + `</div>`;
+    };
+    $("#fm-standings").innerHTML =
+      `<div class="section-rule">Western Conference</div>` + conf("W", (t) => !CONF_E.has(t)) +
+      `<div class="section-rule">Eastern Conference</div>` + conf("E", (t) => CONF_E.has(t)) +
+      `<p class="result-note">${FM.standMode === "proj"
+        ? "Projected wins, playoff odds and title odds from the preseason Monte-Carlo (4,000 season sims on the live rosters)."
+        : "Final regular-season record with the model's net rating; form = last five games."}</p>`;
+  }
+  function standProj() {
+    return (D.preseason || []).filter((p) => p.season === lastFull + 1).map((p) => ({
+      team: p.team, w: Math.round(p.projWins != null ? p.projWins : p.simMean), net: p.predNet,
+      l: 82 - Math.round(p.projWins != null ? p.projWins : p.simMean),
+      mid: p.pPlayoff != null ? Math.round(p.pPlayoff * 100) + "%" : "\u2013",
+      last: p.pChamp != null ? (p.pChamp * 100).toFixed(1) + "%" : "\u2013",
+    }));
+  }
+  function standFinal() {
+    const acc = {};
+    FM.games.forEach((g) => {
+      if (g.season !== lastFull || g.type !== "R" || g.hPts == null) return;
+      const upd = (t, pf, pa, won) => {
+        const a = acc[t] = acc[t] || { w: 0, l: 0, pf: 0, pa: 0, n: 0, seq: [] };
+        a.w += won; a.l += 1 - won; a.pf += pf; a.pa += pa; a.n += 1; a.seq.push(won);
+      };
+      upd(g.home, g.hPts, g.aPts, g.hPts > g.aPts ? 1 : 0);
+      upd(g.away, g.aPts, g.hPts, g.aPts > g.hPts ? 1 : 0);
+    });
+    return Object.keys(acc).map((t) => {
+      const a = acc[t];
+      return { team: t, w: a.w, l: a.l, net: (a.pf - a.pa) / a.n,
+        mid: (a.w / Math.max(1, a.w + a.l)).toFixed(3).replace(/^0/, ""),
+        last: `<span class="form">` + a.seq.slice(-5).map((x) => `<i class="${x ? "w" : "l"}">${x ? "W" : "L"}</i>`).join("") + `</span>` };
+    });
+  }
+  $("#fm-stand-mode").addEventListener("click", (e) => {
+    const b = e.target.closest("button"); if (!b) return;
+    FM.standMode = b.dataset.m; renderStandings();
+  });
+  $("#fm-standings").addEventListener("click", (e) => {
+    const r = e.target.closest(".st-row"); if (r) openTeam(r.dataset.t);
+  });
+
+  /* ---- Teams -------------------------------------------------------------- */
+  function renderTeamsGrid() {
+    const pre = {}; (D.preseason || []).forEach((p) => { if (p.season === lastFull + 1) pre[p.team] = p; });
+    const abs = Object.keys(D.teamNames).sort((a, b) => ((pre[b] || {}).pChamp || 0) - ((pre[a] || {}).pChamp || 0));
+    $("#fm-teams").innerHTML = abs.map((ab) => {
+      const p = pre[ab] || {};
+      return `<button class="team-card" data-t="${ab}">${tmono(ab, "lg")}<b>${teamName(ab)}</b>
+        <small>${p.projWins != null ? Math.round(p.projWins) + " proj W" : ""}${p.pChamp != null ? ` \u00b7 ${(p.pChamp * 100).toFixed(1)}% title` : ""}</small></button>`;
+    }).join("");
+  }
+  $("#fm-teams").addEventListener("click", (e) => {
+    const c = e.target.closest(".team-card"); if (c) openTeam(c.dataset.t);
+  });
+  function openTeam(ab) {
+    showView("team");
+    const p = (D.preseason || []).find((x) => x.season === lastFull + 1 && x.team === ab) || {};
+    $("#fm-team-head").innerHTML = `<div class="th-head">${tmono(ab, "xl")}
+      <div><h2>${teamName(ab)}</h2><div class="th-sub">${seasonLabel(lastFull + 1)} outlook</div></div>
+      <div class="th-stats">
+        <div><div class="k">Proj W\u2013L</div><div class="v">${p.projWins != null ? Math.round(p.projWins) + "\u2013" + (82 - Math.round(p.projWins)) : "\u2013"}</div></div>
+        <div><div class="k">Net</div><div class="v">${p.predNet != null ? signed(p.predNet, 1) : "\u2013"}</div></div>
+        <div><div class="k">Playoffs</div><div class="v">${p.pPlayoff != null ? Math.round(p.pPlayoff * 100) + "%" : "\u2013"}</div></div>
+        <div><div class="k">Title</div><div class="v">${p.pChamp != null ? (p.pChamp * 100).toFixed(1) + "%" : "\u2013"}</div></div>
+      </div></div>`;
+    const squad = D.players.filter((x) => x.predictive && x.season === lastFull + 1 && x.team === ab && x.bookerScore != null)
+      .sort((a, b) => b.bookerScore - a.bookerScore).slice(0, 15);
+    const games = FM.games.map((g, gi) => ({ ...g, gi }))
+      .filter((g) => g.home === ab || g.away === ab);
+    const recent = games.filter((g) => g.hPts != null).slice(-6);
+    const next = games.filter((g) => g.hPts == null).slice(0, 6);
+    $("#fm-team-body").innerHTML =
+      `<div class="panel"><h3 class="panel-title">Squad <span class="panel-hint">projected ${seasonLabel(lastFull + 1)} rotation \u2014 badge = season-level rating on the match scale</span></h3>
+        <div class="rating-list">` + squad.map((x) =>
+          `<div class="rl-row" data-pid="${x.pid}"><span class="nm">${x.player}</span>
+           <span class="mn">${x.min != null ? Math.round(x.min).toLocaleString() + " min" : ""}</span>${rbadge(score10(x.bookerScore))}</div>`).join("") +
+      `</div></div>
+      ${next.length ? `<div class="section-rule">Fixtures</div><div class="match-list">` + next.map(matchRowHtml).join("") + `</div>` : ""}
+      ${recent.length ? `<div class="section-rule">Recent results</div><div class="match-list">` + recent.map(matchRowHtml).join("") + `</div>` : ""}`;
+  }
+  $("#fm-team-body").addEventListener("click", (e) => {
+    const r = e.target.closest(".rl-row"); if (r) { openPlayer(+r.dataset.pid); return; }
+    const m = e.target.closest(".match-row"); if (m) openMatch(+m.dataset.gi);
+  });
+  $("#team-back").addEventListener("click", () => routeView("teams"));
+
+  /* ---- player match strip (FotMob per-game badges) ------------------------- */
+  function fmPlayerMatches(pid) {
+    const panel = $("#player-matches-panel");
+    const entries = FM.pg[pid];
+    if (!entries || !entries.length) { panel.hidden = true; return; }
+    panel.hidden = false;
+    const cells = entries.slice(-30).reverse().map(([gi, r]) => {
+      const g = FM.games[gi]; if (!g) return "";
+      const p = rowOf(pid);
+      const mine = p && p.team === g.home;
+      const opp = mine ? g.away : g.home;
+      return `<div class="pm-cell" data-gi="${gi}">
+        <div class="opp">${mine ? "vs" : "@"} ${opp}</div>${rbadge(r)}
+        <div class="dt">${dHuman(g.date)}</div></div>`;
+    }).join("");
+    $("#player-matches").innerHTML = cells;
+  }
+  $("#player-matches").addEventListener("click", (e) => {
+    const c = e.target.closest(".pm-cell"); if (c) openMatch(+c.dataset.gi);
+  });
+
+  /* ---- More ------------------------------------------------------------------ */
+  const MORE_ITEMS = [
+    ["forecast", "\ud83d\udcc8", "Win Forecast", "Preseason sims, in-season trajectory, backtests"],
+    ["trade", "\ud83d\udd01", "Trade Machine", "Multi-asset trades with cap rules and GM verdict"],
+    ["lineup", "\ud83e\uddea", "Lineup Lab", "Build a rotation \u2192 projected wins and title odds"],
+    ["trajectory", "\ud83d\udcc9", "Trajectory", "Career arcs, form dots, projections, any skill"],
+    ["leaders", "\ud83c\udfc6", "Stat Leaders", "True-skill leaderboards, difficulty-adjusted"],
+    ["matchups", "\u2694\ufe0f", "Matchups", "Team vs team skill comparison"],
+    ["gameodds", "\ud83c\udfb2", "Game Odds", "Model vs market: log-loss, calibration, ROI"],
+    ["diagnostics", "\ud83e\ude7a", "Diagnostics", "Calibration and model health"],
+    ["method", "\ud83d\udcd6", "Methodology", "How BOOKER works, end to end"],
+  ];
+  function renderMore() {
+    if ($("#fm-more").childElementCount) return;
+    $("#fm-more").innerHTML = MORE_ITEMS.map(([v, ico, t, d]) =>
+      `<button class="more-item" data-view="${v}"><span class="ico">${ico}</span><span><b>${t}</b><small>${d}</small></span></button>`).join("");
+  }
+  $("#fm-more").addEventListener("click", (e) => {
+    const b = e.target.closest(".more-item"); if (b) routeView(b.dataset.view);
+  });
+
+  /* ---- app-bar global player search ------------------------------------------- */
+  $("#ab-search").addEventListener("change", () => {
+    ensureNameIndex();
+    const pid = _cmpByName[$("#ab-search").value.trim().toLowerCase()];
+    if (pid != null) { $("#ab-search").value = ""; openPlayer(pid); }
+  });
+
   /* ---- boot ------------------------------------------------------------ */
   initFilters();
   renderLB();
   renderMethod();
+  ensureNameIndex();                 // app-bar search autocomplete from first paint
+  renderMatches();
+  renderMore();
   $("#foot-note").textContent =
-    `BOOKER WAA \u00b7 ${D.players.length.toLocaleString()} player-seasons \u00b7 ` +
+    `BOOKER \u00b7 ${D.players.length.toLocaleString()} player-seasons \u00b7 ` +
     `${seasonLabel(D.seasons[0])} to ${seasonLabel(latest)} \u00b7 built ${D.generated}`;
 })();
