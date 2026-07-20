@@ -549,6 +549,7 @@
     const seasons = D.players.filter((p) => p.pid === pid).sort((a, b) => a.season - b.season);
     if (!seasons.length) return;
     fmPlayerMatches(pid);              // FotMob per-game rating strip
+    fmPlayoffSplit(pid);               // playoff vs regular career split
     const name = seasons[seasons.length - 1].player;
     const teams = Array.from(new Set(seasons.map((s) => s.team)));
     const totWaa = seasons.reduce((a, s) => a + s.waa, 0);
@@ -2375,8 +2376,11 @@
   function renderBracket() {
     const seasons = Array.from(new Set(FM.games.filter((g) => g.type === "P" && g.hPts != null)
       .map((g) => g.season))).sort();
+    const pred = D.predBracket;
+    if (pred && !seasons.includes(pred.season)) seasons.push(pred.season);
     if (!seasons.length) { $("#fm-standings").innerHTML = `<p class="result-note">No playoff games in the data window.</p>`; return; }
     if (!FM.brSeason || !seasons.includes(FM.brSeason)) FM.brSeason = seasons[seasons.length - 1];
+    if (pred && FM.brSeason === pred.season) { renderPredBracket(pred, seasons); return; }
     const ser = playoffSeriesData(FM.brSeason);
     const confOf = (s) => CONF_E.has(Object.keys(s.teams)[0]) ? "E" : "W";
     const col = (rnd, cf) => ser.filter((s) => s.rnd === rnd && (rnd === 4 || confOf(s) === cf))
@@ -2384,8 +2388,7 @@
     const colHtml = (title, list) =>
       `<div class="br-col"><div class="br-col-h">${title}</div>` + list.map(brCard).join("") + `</div>`;
     $("#fm-standings").innerHTML =
-      `<div class="br-season">` + seasons.map((s) =>
-        `<button data-s="${s}" class="${s === FM.brSeason ? "on" : ""}">${seasonLabel(s)}</button>`).join("") + `</div>` +
+      brSeasonToggle(seasons) +
       `<div class="bracket-wrap"><div class="bracket">` +
       colHtml("West · " + R_NAMES[0], col(1, "W")) +
       colHtml("West · " + R_NAMES[1], col(2, "W")) +
@@ -2396,6 +2399,39 @@
       colHtml("East · " + R_NAMES[0], col(1, "E")) +
       `</div></div>
       <p class="result-note">Tap a series to open its deciding game. Winner in green; series score alongside.</p>`;
+  }
+  function brSeasonToggle(seasons) {
+    const pred = D.predBracket;
+    return `<div class="br-season">` + seasons.map((s) =>
+      `<button data-s="${s}" class="${s === FM.brSeason ? "on" : ""}">${seasonLabel(s)}${pred && s === pred.season ? " · predicted" : ""}</button>`).join("") + `</div>`;
+  }
+  function renderPredBracket(pred, seasons) {
+    const card = (s) => {
+      const pHi = s.p, fav = pHi >= 0.5;
+      return `<div class="br-series ${s.r === 4 ? "final" : ""}">
+        <div class="br-t ${fav ? "won" : "lost"}">${tmono(s.hi)} ${s.hi}<span class="wn">${Math.round(pHi * 100)}%</span></div>
+        <div class="br-t ${fav ? "lost" : "won"}">${tmono(s.lo)} ${s.lo}<span class="wn">${Math.round((1 - pHi) * 100)}%</span></div>
+        ${s.r === 4 ? `<div class="br-champ">🏆 ${teamName(pred.champ)}${pred.pChamp != null ? ` · ${(pred.pChamp * 100).toFixed(0)}% title odds` : ""}</div>` : ""}
+      </div>`;
+    };
+    const col = (rnd, cf) => pred.rounds.filter((s) => s.r === rnd && (rnd === 4 || s.conf === cf));
+    const colHtml = (title, list) =>
+      `<div class="br-col"><div class="br-col-h">${title}</div>` + list.map(card).join("") + `</div>`;
+    $("#fm-standings").innerHTML =
+      brSeasonToggle(seasons) +
+      `<div class="bracket-wrap"><div class="bracket">` +
+      colHtml("West · " + R_NAMES[0], col(1, "W")) +
+      colHtml("West · " + R_NAMES[1], col(2, "W")) +
+      colHtml("West · " + R_NAMES[2], col(3, "W")) +
+      colHtml(R_NAMES[3], col(4)) +
+      colHtml("East · " + R_NAMES[2], col(3, "E")) +
+      colHtml("East · " + R_NAMES[1], col(2, "E")) +
+      colHtml("East · " + R_NAMES[0], col(1, "E")) +
+      `</div></div>
+      <p class="result-note">Predicted bracket: conferences seeded by projected wins (live rosters), each series
+      priced by the validated playoff engine — shrunk preseason nets + top-7 rotation blend + home court,
+      integrated over per-series matchup variance. The favorite advances at each step; percentages are that
+      series' win probability, so deep-run odds compound smaller than any single matchup looks.</p>`;
   }
 
   /* ---- Teams -------------------------------------------------------------- */
@@ -2463,6 +2499,26 @@
   $("#player-matches").addEventListener("click", (e) => {
     const c = e.target.closest(".pm-cell"); if (c) openMatch(+c.dataset.gi);
   });
+
+  /* ---- playoff vs regular split (career, descriptive) ----------------------- */
+  function fmPlayoffSplit(pid) {
+    const panel = $("#player-po-panel");
+    const s = (D.playoffSplit || {})[pid];
+    if (!s) { panel.hidden = true; return; }
+    panel.hidden = false;
+    const reg10 = s[0], po10 = s[1], n = s[2], diff = s[3];
+    const verdict = Math.abs(diff) < 1.0 ? "Holds his level in the playoffs"
+      : diff > 0 ? "Has risen in the playoffs" : "Has dipped in the playoffs";
+    $("#player-po").innerHTML =
+      `<div style="display:flex;gap:26px;align-items:center;flex-wrap:wrap">
+        <div style="text-align:center"><div class="gh-cap">REGULAR</div>${rbadge(reg10, true)}</div>
+        <div style="text-align:center"><div class="gh-cap">PLAYOFFS · ${n} GMS</div>${rbadge(po10, true)}</div>
+        <div style="flex:1;min-width:220px;font-size:13px;color:var(--ink-2)">
+          ${verdict}: <b>${signed(diff, 1)}</b> per 100 possessions vs his regular-season baseline.
+          <span style="color:var(--muted)">League context: across 893 player-postseasons no play style
+          predicts this differential — playoff rises and falls are matchups and noise, not archetype.</span></div>
+      </div>`;
+  }
 
   /* ---- More ------------------------------------------------------------------ */
   const MORE_ITEMS = [
