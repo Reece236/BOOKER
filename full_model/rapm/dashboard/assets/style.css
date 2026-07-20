@@ -420,3 +420,45 @@ table.grid tbody tr.clickable{cursor:pointer}
   display:inline-flex; align-items:baseline; gap:6px}
 .comp-chip:hover{border-color:var(--accent)}
 .comp-chip small{font-size:10px; font-weight:400; color:var(--muted); font-family:var(--mono)}
+
+/* playoff knockout tree (FotMob-style) ----------------------------------- */
+.bracket-wrap{overflow-x:auto; padding-bottom:8px}
+.bracket{display:flex; gap:14px; min-width:1020px; align-items:stretch}
+.br-col{display:flex; flex-direction:column; justify-content:space-around; gap:10px; flex:1; min-width:132px}
+.br-col-h{text-align:center; font-size:9.5px; font-weight:800; text-transform:uppercase;
+  letter-spacing:.07em; color:var(--muted); margin-bottom:2px}
+.br-series{background:var(--panel); border-radius:10px; padding:7px 9px; cursor:pointer;
+  display:flex; flex-direction:column; gap:5px; border:1px solid transparent}
+.br-series:hover{border-color:var(--accent)}
+.br-series.final{background:var(--panel-2); box-shadow:0 0 0 1px var(--accent)}
+.br-t{display:flex; align-items:center; gap:7px; font-size:12px; font-weight:600}
+.br-t .tm{width:20px; height:20px; flex-basis:20px; font-size:8px}
+.br-t .wn{margin-left:auto; font-weight:800; font-variant-numeric:tabular-nums}
+.br-t.won{color:var(--ink)} .br-t.won .wn{color:var(--accent)}
+.br-t.lost{color:var(--muted)}
+.br-champ{text-align:center; margin-top:6px; font-size:11px; font-weight:800; color:var(--accent)}
+.br-season{display:flex; gap:6px; justify-content:center; margin:2px 0 10px}
+.br-season button{background:var(--panel); border:0; border-radius:8px; color:var(--muted);
+  font-weight:700; font-size:12px; padding:6px 14px; cursor:pointer}
+.br-season button.on{background:var(--panel-2); color:#fff; box-shadow:inset 0 -2px 0 var(--accent)}
+
+/* theme toggle ------------------------------------------------------------- */
+.theme-btn{background:var(--panel-2); border:0; border-radius:50%; width:32px; height:32px;
+  cursor:pointer; font-size:15px; display:inline-flex; align-items:center; justify-content:center}
+
+/* creme mode — the almanac palette as light theme ---------------------------- */
+body.creme{
+  --paper:#f4f2ec; --panel:#fbfaf6; --panel-2:#ebe7dc;
+  --ink:#141310; --ink-2:#3d3a34; --muted:#8f8a7e; --muted-2:#b3ad9f;
+  --rule:#ddd8cc; --rule-dk:#c9c3b4;
+  --accent:#0e9a60; --pos:#1c7a3a; --neg:#c0392b; --heat:#141310;
+}
+body.creme .appbar, body.creme .tabs{background:#fbfaf6}
+body.creme .ab-logo{color:#141310}
+body.creme .tab.is-active{color:#0e9a60}
+body.creme .datebar button.on, body.creme .mtabs button.on, body.creme .conf-toggle button.on,
+body.creme .br-season button.on{color:#141310}
+body.creme .st-row.q-play .pos-n{color:#0e9a60}
+body.creme .rb-org{color:#3c2800}
+body.creme .sb-verdict{color:#fff}
+body.creme .btn{color:#fff}

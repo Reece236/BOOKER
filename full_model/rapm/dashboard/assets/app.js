@@ -242,6 +242,7 @@
 
   /* ---- view router ----------------------------------------------------- */
   const charts = {};
+  const chartGrid = () => document.body.classList.contains("creme") ? "rgba(20,19,16,.08)" : "rgba(233,237,242,.07)";
   function destroy(id) { if (charts[id]) { charts[id].destroy(); delete charts[id]; } }
   function showView(name) {
     $$(".view").forEach((v) => (v.hidden = v.id !== "view-" + name));
@@ -1440,8 +1441,8 @@
         },
         scales: {
           x: { type: "linear", ticks: { stepSize: 1, callback: (v) => Number.isInteger(v) ? seasonLabel(v) : "",
-               font: { family: "ui-monospace, Menlo, monospace", size: 10 } }, grid: { color: "rgba(233,237,242,.07)" } },
-          y: { title: { display: true, text: yLabel }, grid: { color: "rgba(233,237,242,.07)" } },
+               font: { family: "ui-monospace, Menlo, monospace", size: 10 } }, grid: { color: chartGrid() } },
+          y: { title: { display: true, text: yLabel }, grid: { color: chartGrid() } },
         },
       },
     });
@@ -1514,9 +1515,9 @@
         },
         scales: {
           x: { type: "linear", ticks: { stepSize: 1, callback: (v) => Number.isInteger(v) ? seasonLabel(v) : "",
-               font: { family: "ui-monospace, Menlo, monospace", size: 10 } }, grid: { color: "rgba(233,237,242,.07)" } },
+               font: { family: "ui-monospace, Menlo, monospace", size: 10 } }, grid: { color: chartGrid() } },
           y: { title: { display: true, text: "BOOKER (+/- per 100 poss)" },
-               grid: { color: "rgba(233,237,242,.07)" } },
+               grid: { color: chartGrid() } },
         },
       },
     });
@@ -2280,9 +2281,11 @@
   /* ---- Table (standings) ------------------------------------------------- */
   const CONF_E = new Set(["ATL","BOS","BRK","CHO","CHI","CLE","DET","IND","MIA","MIL","NYK","ORL","PHI","TOR","WAS"]);
   function renderStandings() {
-    const modes = [["proj", `${seasonLabel(lastFull + 1)} projected`], ["final", `${seasonLabel(lastFull)} final`]];
+    const modes = [["proj", `${seasonLabel(lastFull + 1)} projected`], ["final", `${seasonLabel(lastFull)} final`],
+                   ["bracket", "Playoffs"]];
     $("#fm-stand-mode").innerHTML = modes.map(([k, l]) =>
       `<button data-m="${k}" class="${FM.standMode === k ? "on" : ""}">${l}</button>`).join("");
+    if (FM.standMode === "bracket") { renderBracket(); return; }
     const rows = FM.standMode === "proj" ? standProj() : standFinal();
     const conf = (name, filter) => {
       const rs = rows.filter((r) => filter(r.team));
@@ -2335,8 +2338,65 @@
     FM.standMode = b.dataset.m; renderStandings();
   });
   $("#fm-standings").addEventListener("click", (e) => {
+    const b = e.target.closest(".br-season button");
+    if (b) { FM.brSeason = +b.dataset.s; renderBracket(); return; }
+    const s = e.target.closest(".br-series");
+    if (s) { openMatch(+s.dataset.gi); return; }
     const r = e.target.closest(".st-row"); if (r) openTeam(r.dataset.t);
   });
+
+  /* ---- Playoff knockout tree (FotMob-style) -------------------------------- */
+  const R_NAMES = ["1st round", "Conf. semis", "Conf. finals", "NBA Finals"];
+  function playoffSeriesData(season) {
+    const acc = {};
+    FM.games.forEach((g, gi) => {
+      if (g.season !== season || g.type !== "P" || g.hPts == null) return;
+      const sid = String(g.id);
+      if (sid[0] !== "4") return;                 // play-in ids start with 5
+      const rnd = +sid[5];
+      if (!(rnd >= 1 && rnd <= 4)) return;
+      const key = rnd + "-" + [g.home, g.away].sort().join("");
+      const s = acc[key] = acc[key] || { rnd, sd: +sid[6], teams: {}, last: gi, date: g.date };
+      s.teams[g.home] = (s.teams[g.home] || 0) + (g.hPts > g.aPts ? 1 : 0);
+      s.teams[g.away] = (s.teams[g.away] || 0) + (g.aPts > g.hPts ? 1 : 0);
+      if (g.date >= s.date) { s.date = g.date; s.last = gi; }
+      s.sd = Math.min(s.sd, +sid[6]);
+    });
+    return Object.values(acc);
+  }
+  function brCard(s) {
+    const ts = Object.entries(s.teams).sort((a, b) => b[1] - a[1]);
+    const done = ts.length && ts[0][1] === 4;
+    return `<div class="br-series ${s.rnd === 4 ? "final" : ""}" data-gi="${s.last}">` +
+      ts.map(([t, w], i) =>
+        `<div class="br-t ${done ? (i === 0 ? "won" : "lost") : ""}">${tmono(t)} ${t}<span class="wn">${w}</span></div>`).join("") +
+      (s.rnd === 4 && done ? `<div class="br-champ">🏆 ${teamName(ts[0][0])}</div>` : "") + `</div>`;
+  }
+  function renderBracket() {
+    const seasons = Array.from(new Set(FM.games.filter((g) => g.type === "P" && g.hPts != null)
+      .map((g) => g.season))).sort();
+    if (!seasons.length) { $("#fm-standings").innerHTML = `<p class="result-note">No playoff games in the data window.</p>`; return; }
+    if (!FM.brSeason || !seasons.includes(FM.brSeason)) FM.brSeason = seasons[seasons.length - 1];
+    const ser = playoffSeriesData(FM.brSeason);
+    const confOf = (s) => CONF_E.has(Object.keys(s.teams)[0]) ? "E" : "W";
+    const col = (rnd, cf) => ser.filter((s) => s.rnd === rnd && (rnd === 4 || confOf(s) === cf))
+      .sort((a, b) => a.sd - b.sd);
+    const colHtml = (title, list) =>
+      `<div class="br-col"><div class="br-col-h">${title}</div>` + list.map(brCard).join("") + `</div>`;
+    $("#fm-standings").innerHTML =
+      `<div class="br-season">` + seasons.map((s) =>
+        `<button data-s="${s}" class="${s === FM.brSeason ? "on" : ""}">${seasonLabel(s)}</button>`).join("") + `</div>` +
+      `<div class="bracket-wrap"><div class="bracket">` +
+      colHtml("West · " + R_NAMES[0], col(1, "W")) +
+      colHtml("West · " + R_NAMES[1], col(2, "W")) +
+      colHtml("West · " + R_NAMES[2], col(3, "W")) +
+      colHtml(R_NAMES[3], col(4)) +
+      colHtml("East · " + R_NAMES[2], col(3, "E")) +
+      colHtml("East · " + R_NAMES[1], col(2, "E")) +
+      colHtml("East · " + R_NAMES[0], col(1, "E")) +
+      `</div></div>
+      <p class="result-note">Tap a series to open its deciding game. Winner in green; series score alongside.</p>`;
+  }
 
   /* ---- Teams -------------------------------------------------------------- */
   function renderTeamsGrid() {
@@ -2424,6 +2484,29 @@
   $("#fm-more").addEventListener("click", (e) => {
     const b = e.target.closest(".more-item"); if (b) routeView(b.dataset.view);
   });
+
+  /* ---- creme mode (light theme = the almanac palette) ------------------------- */
+  function applyTheme(t) {
+    document.body.classList.toggle("creme", t === "creme");
+    Chart.defaults.color = t === "creme" ? "#6f6a5c" : "#8b96a2";
+    $("#theme-toggle").textContent = t === "creme" ? "🌙" : "☀️";
+    try { localStorage.setItem("booker-theme", t); } catch (e) { /* private mode */ }
+  }
+  $("#theme-toggle").addEventListener("click", () => {
+    const t = document.body.classList.contains("creme") ? "dark" : "creme";
+    applyTheme(t);
+    // re-render the current routed view so charts pick up the new palette;
+    // detail views (player/match/team) recolor on next open instead.
+    const cur = $$(".view").find((v) => !v.hidden);
+    const name = cur ? cur.id.replace("view-", "") : "matches";
+    if (!["player", "match", "team"].includes(name)) {
+      Object.keys(charts).forEach(destroy);
+      routeView(name);
+    }
+  });
+  let _theme0 = "dark";
+  try { _theme0 = localStorage.getItem("booker-theme") || "dark"; } catch (e) { /* ok */ }
+  applyTheme(_theme0);
 
   /* ---- app-bar global player search ------------------------------------------- */
   $("#ab-search").addEventListener("change", () => {
