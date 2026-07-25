@@ -145,6 +145,7 @@ def load_enhanced_players():
 def load_trade():
     try:
         from forecast import player_impacts as pi
+        from forecast import minutes_model as mm
         from forecast.trade_sim import export_trade_payload
         data = pi.BookerData(seasons=range(2015, 2028))
         season = 2027 if 2027 in data.GAMES else max(data.seasons)
@@ -154,7 +155,14 @@ def load_trade():
         from forecast import contract_value as cv
         from forecast import enhanced_impacts as ei
         enh = ei.build_enhanced(data, train, season)
-        _, _, net_tid = ei.aggregate_off_def(data, enh, season, target_season=season)
+        # Roll the roster up over *projected healthy* rotation minutes (fixed
+        # 240-min/game team budget, replacement-level tail) rather than cloned
+        # injury-shortened minutes -- this is what feeds the dashboard win totals
+        # and the Lineup Lab base rotation.
+        proj_min = mm.project_minutes(data, season)
+        budget = pi.TEAM_BUDGET
+        _, _, net_tid = ei.aggregate_off_def(
+            data, enh, season, target_season=season, minutes=proj_min, budget=budget)
         waa_map = cv.build_waa_name_map(data, season)
         cv.fit_model(waa_map)
         ages = {}
@@ -179,16 +187,26 @@ def load_trade():
         team_net = {abbr[t]: round(float(v), 2) for t, v in net_tid.items() if t in abbr}
         team_wins = {t: round(k * v + c, 1) for t, v in team_net.items()}
         pl = data.PLAYERS[season]
-        team_min = {}
+        # observed team minutes -- kept only for the BOOKER per-minute rate, which
+        # pairs observed WAA with observed presence
+        obs_team_min = {}
         for pid, tid, mn in zip(pl.PLAYER_ID, pl.TEAM_ID, pl.MINUTES):
             ab = abbr.get(tid)
             if ab:
-                team_min[ab] = team_min.get(ab, 0.0) + float(mn)
+                obs_team_min[ab] = obs_team_min.get(ab, 0.0) + float(mn)
+        # projected rotation minutes per team (~19,680; feeds teamMinutes + Lineup Lab)
+        team_min = {}
+        for pid, tid in zip(pl.PLAYER_ID, pl.TEAM_ID):
+            ab = abbr.get(tid)
+            if ab:
+                team_min[ab] = team_min.get(ab, 0.0) + proj_min.get(int(pid), 0.0)
         players = []
         for r in payload["components"]:
             ab = r["team"]
-            tm = team_min.get(ab, 1.0)
+            tm = obs_team_min.get(ab, 1.0)
             pres = r["minutes"] / (tm / 5.0) if tm > 0 else 0
+            pmin = proj_min.get(int(r["pid"]), 0.0)
+            proj_pres = pmin / (budget / 5.0)
             nm = cv.norm_name(r["player"])
             pos = pos_by_nm.get(nm, "SF")
             age = ages.get(nm, 27.0)
@@ -199,10 +217,11 @@ def load_trade():
                 r["player"], pos, age, booker, yp, waa_map)
             players.append({
                 "pid": r["pid"], "player": r["player"], "team": ab,
-                "minutes": int(r["minutes"]),
+                "minutes": int(round(pmin)),
+                "projMin": int(round(pmin)),
                 "impactTotal": r["impact_total"],
                 "impactOff": r["impact_off"], "impactDef": r["impact_def"],
-                "netContrib": round(r["impact_total"] * pres, 2),
+                "netContrib": round(r["impact_total"] * proj_pres, 2),
                 "waaOff": r["waa_off"], "waaDef": r["waa_def"], "waaTotal": r["waa_total"],
                 "pos": pos, "age": round(age, 1), "yearsPro": yp,
                 **contract,
@@ -215,6 +234,8 @@ def load_trade():
         return {
             "season": season,
             "k": round(k, 3), "c": round(c, 1),
+            "teamBudget": int(budget),
+            "replacementImpact": pi.REPLACEMENT_IMPACT,
             "teamNet": team_net, "teamWins": team_wins, "teamSimWins": sim_wins,
             "teamMinutes": {k: int(v) for k, v in team_min.items()},
             "players": players,

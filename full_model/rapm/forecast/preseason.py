@@ -21,6 +21,7 @@ import pandas as pd
 from scipy.stats import norm
 
 from . import player_impacts as pi
+from . import minutes_model as mm
 
 try:
     from . import enhanced_impacts as ei
@@ -35,29 +36,39 @@ SEASONS = range(2018, 2028)
 
 
 def team_nets(data, season):
-    """Predicted net rating per team abbreviation for `season` (prior-only)."""
+    """Predicted net rating per team abbreviation for `season` (prior-only).
+
+    Rosters are rolled up over *projected healthy* minutes (see minutes_model)
+    within a fixed 240-min/game team budget, so injuries don't leak forward and
+    deep-bench scrubs carry near-zero weight.
+    """
     train = pi.prior_train_seasons(data, season)
     if not train or season not in data.PLAYERS:
         return None, None, None
+    mins = mm.project_minutes(data, season)
+    budget = pi.TEAM_BUDGET
     if ei is not None:
         enh = ei.build_enhanced(data, train, season)
         _, _, net_by_tid = ei.aggregate_off_def(
-            data, enh, season, target_season=season)
+            data, enh, season, target_season=season, minutes=mins, budget=budget)
     elif bayesian_impacts is not None:
         off, def_, tot = bayesian_impacts(season)
         if tot:
             impact = tot
-            net_by_tid = pi.aggregate_net(data, impact, season, target_season=season)
+            net_by_tid = pi.aggregate_net(data, impact, season, target_season=season,
+                                          minutes=mins, budget=budget)
         else:
             alpha = pi.pick_alpha(data, train)
             impact, _, last_age = pi.build_impacts(data, train, season, alpha)
             net_by_tid = pi.aggregate_net(data, impact, season,
-                                          last_age=last_age, target_season=season)
+                                          last_age=last_age, target_season=season,
+                                          minutes=mins, budget=budget)
     else:
         alpha = pi.pick_alpha(data, train)
         impact, _, last_age = pi.build_impacts(data, train, season, alpha)
         net_by_tid = pi.aggregate_net(data, impact, season,
-                                      last_age=last_age, target_season=season)
+                                      last_age=last_age, target_season=season,
+                                      minutes=mins, budget=budget)
     abbr = dict(zip(data.TEAMS[season].TEAM_ID, data.TEAMS[season].ABBR))
     nets = {abbr[t]: v for t, v in net_by_tid.items() if t in abbr}
     k, c = pi.fit_net_to_wins(data, train)
