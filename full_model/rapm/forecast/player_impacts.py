@@ -45,6 +45,18 @@ LEAGUE_PPP100 = 108.0  # baseline points scored per 100 possessions
 HOME_COURT_ADV = 2.6          # points of home edge per game
 GAME_MARGIN_SD = 13.3         # std of a single-game point margin
 
+# --- projected-minutes / rotation model ------------------------------------
+# Future minutes are projected as a *healthy* workload (role rate x games) and
+# allocated within a fixed team-minutes budget, rather than cloning last year's
+# injury-shortened totals. A team must fill TEAM_MIN_PER_GAME minutes each game;
+# minutes the roster does not cover fall to a replacement-level player.
+SEASON_GAMES = 82             # games in a regular season
+TEAM_MIN_PER_GAME = 240.0     # 5 positions x 48 minutes
+TEAM_BUDGET = SEASON_GAMES * TEAM_MIN_PER_GAME   # 19,680 player-minutes / team
+TARGET_GAMES = 72             # healthy-but-realistic availability (stars rest ~10)
+MPG_CAP = 36.0                # nobody is projected above ~36 minutes per game
+REPLACEMENT_IMPACT = -2.5     # net impact / 100 poss of a replacement-level filler
+
 CONFERENCE = {
     "ATL": "E", "BOS": "E", "BRK": "E", "CHI": "E", "CHO": "E", "CLE": "E",
     "DET": "E", "IND": "E", "MIA": "E", "MIL": "E", "NYK": "E", "ORL": "E",
@@ -103,6 +115,18 @@ class BookerData:
                     for (nm, ss), g in bk.groupby(["nm", "season"])}
         self.AGE = {(nm, ss): np.average(g.age, weights=g.minutesPlayed.clip(lower=1))
                     for (nm, ss), g in bk.groupby(["nm", "season"])}
+        # Health-free role signal: minutes-per-game and games played per
+        # (name, season). A traded player has multiple rows in a season; sum the
+        # pieces so games/minutes reflect the full season. mpg encodes the coach's
+        # real role independent of the *rating* -- an injured star keeps starter
+        # mpg while logging few games; a garbage-time bench guy stays low.
+        self.GAMES, self.MPG = {}, {}
+        if "games" in bk.columns:
+            for (nm, ss), g in bk.groupby(["nm", "season"]):
+                gp = float(g.games.sum())
+                mp = float(g.minutesPlayed.sum())
+                self.GAMES[(nm, ss)] = gp
+                self.MPG[(nm, ss)] = mp / gp if gp > 0 else 0.0
 
         tp = pd.read_csv(TEAM_PRED)
         self.ACTUAL_WINS = {(r.team_abbr, int(r.season)): r.actual_wins
@@ -345,11 +369,18 @@ def aged_value(impact, pid, last_age, target_season):
 
 
 def aggregate_net(data, impact, season, last_age=None, target_season=None,
-                  minutes=None):
+                  minutes=None, budget=None):
     """Predicted team net rating for `season` rosters using player impacts.
 
     `minutes` optionally overrides the per-player minute weights (dict pid->min);
     otherwise the season's observed minutes are used.
+
+    `budget` optionally fixes the team-minutes denominator (e.g. TEAM_BUDGET =
+    82*240). When set, presence is `min / (budget/5)` and any minutes the roster
+    leaves unfilled (budget - sum) are charged to a REPLACEMENT_IMPACT filler, so
+    a team is always evaluated over a full 240-min/game rotation. When None the
+    legacy own-sum normalization is used (keeps historical calibration paths and
+    `pick_alpha` unchanged).
     """
     pl = data.PLAYERS[season]
     mins = minutes if minutes is not None else dict(zip(pl.PLAYER_ID, pl.MINUTES))
@@ -362,8 +393,15 @@ def aggregate_net(data, impact, season, last_age=None, target_season=None,
             continue
         val = aged_value(impact, pid, last_age, target_season) if target_season else \
             impact.get(pid, PRIOR_BASE)
-        presence = mins.get(pid, 0.0) / (tmin[tid] / 5.0)
+        denom = (budget if budget else tmin[tid]) / 5.0
+        presence = mins.get(pid, 0.0) / denom
         pred[tid] = pred.get(tid, 0.0) + val * presence
+    if budget:
+        for tid, filled in tmin.items():
+            if filled <= 0:
+                continue
+            shortfall = max(0.0, budget - filled)
+            pred[tid] = pred.get(tid, 0.0) + REPLACEMENT_IMPACT * (shortfall / (budget / 5.0))
     return pred
 
 

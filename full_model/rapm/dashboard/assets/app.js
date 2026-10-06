@@ -1220,10 +1220,19 @@
   }
   function llRecompute() {
     const rost = LL.roster.filter((r) => r.minutes > 0);
-    const tot = rost.reduce((a, r) => a + r.minutes, 0);
+    const filled = rost.reduce((a, r) => a + r.minutes, 0);
     const out = $("#ll-out");
-    if (tot <= 0 || rost.length < 5) { out.innerHTML = `<p class="result-note">Add at least 5 players with minutes.</p>`; return; }
-    const net = rost.reduce((a, r) => a + r.impactTotal * (r.minutes / (tot / 5)), 0);
+    if (filled <= 0 || rost.length < 5) { out.innerHTML = `<p class="result-note">Add at least 5 players with minutes.</p>`; return; }
+    // A team must fill a fixed 240-min/game budget. Minutes the roster leaves
+    // unfilled go to a replacement-level player rather than renormalizing the
+    // survivors upward -- so cutting a garbage-time scrub barely moves the total,
+    // while cutting a real rotation player leaves a hole that hurts. (If the user
+    // over-allocates past the budget, fall back to renormalizing the 5 slots.)
+    const BUDGET = D.trade.teamBudget || (82 * 240);
+    const REPL = (D.trade.replacementImpact != null ? D.trade.replacementImpact : -2.5);
+    const denom = Math.max(BUDGET, filled) / 5;
+    let net = rost.reduce((a, r) => a + r.impactTotal * (r.minutes / denom), 0);
+    net += REPL * (Math.max(0, BUDGET - filled) / denom);
     const wins = Math.max(5, Math.min(82, D.trade.k * net + D.trade.c));
     const champ = champAfter(LL.team, net);
     const bNet = D.trade.teamNet[LL.team];

@@ -14,6 +14,7 @@ import pandas as pd
 
 from . import contract_value as cv
 from . import enhanced_impacts as ei
+from . import minutes_model as mm
 from . import player_impacts as pi
 from .preseason import simulate, playoff_odds
 
@@ -92,13 +93,15 @@ def salary_match_check(salary_out, salary_in):
     return ok, f"need ${max(0, allowed - inn):,.0f} more incoming" if not ok else "matched"
 
 
-def roster_minutes(pl):
-    return dict(zip(pl.PLAYER_ID.astype(int), pl.MINUTES.astype(float)))
+def roster_minutes(data, season, pl):
+    """Projected healthy rotation minutes for this (possibly edited) roster."""
+    return mm.project_minutes(data, season, roster=pl)
 
 
 def nets_from_roster(data, season, pl, enh):
-    mins = roster_minutes(pl)
-    _, _, tot = ei.aggregate_off_def(data, enh, season, target_season=season, minutes=mins)
+    mins = roster_minutes(data, season, pl)
+    _, _, tot = ei.aggregate_off_def(data, enh, season, target_season=season,
+                                     minutes=mins, budget=pi.TEAM_BUDGET)
     return _abbr_nets(tot, data, season)
 
 

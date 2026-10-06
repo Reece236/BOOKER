@@ -475,8 +475,16 @@ def build_enhanced(data, train_seasons, target_season, alpha=None,
     )
 
 
-def aggregate_off_def(data, enh, season, target_season=None, minutes=None):
-    """Team-level offensive and defensive net ratings."""
+def aggregate_off_def(data, enh, season, target_season=None, minutes=None,
+                      budget=None):
+    """Team-level offensive and defensive net ratings.
+
+    `budget` optionally fixes the team-minutes denominator (e.g. pi.TEAM_BUDGET)
+    and charges any unfilled minutes to a replacement-level player, so cutting a
+    deep-bench scrub can't renormalize the survivors upward. See
+    `player_impacts.aggregate_net` for the rationale; None keeps the legacy
+    own-sum normalization.
+    """
     pl = data.PLAYERS[season]
     mins = minutes if minutes is not None else dict(zip(pl.PLAYER_ID, pl.MINUTES))
     tmin = {}
@@ -488,13 +496,24 @@ def aggregate_off_def(data, enh, season, target_season=None, minutes=None):
     for pid, tid in zip(pl.PLAYER_ID, pl.TEAM_ID):
         if tid not in tmin or tmin[tid] <= 0:
             continue
-        pres = mins.get(pid, 0.0) / (tmin[tid] / 5.0)
+        denom = (budget if budget else tmin[tid]) / 5.0
+        pres = mins.get(pid, 0.0) / denom
         o = pi.aged_value(enh.off, pid, enh.last_age, ts) if ts else enh.off.get(pid, 0)
         d = pi.aged_value(enh.def_, pid, enh.last_age, ts) if ts else enh.def_.get(pid, 0)
         t = pi.aged_value(enh.total, pid, enh.last_age, ts) if ts else enh.total.get(pid, 0)
         off_net[tid] = off_net.get(tid, 0.0) + o * pres
         def_net[tid] = def_net.get(tid, 0.0) + d * pres
         tot_net[tid] = tot_net.get(tid, 0.0) + t * pres
+    if budget:
+        # unfilled minutes -> replacement-level filler (split evenly off/def)
+        repl = pi.REPLACEMENT_IMPACT
+        for tid, filled in tmin.items():
+            if filled <= 0:
+                continue
+            share = max(0.0, budget - filled) / (budget / 5.0)
+            off_net[tid] = off_net.get(tid, 0.0) + 0.5 * repl * share
+            def_net[tid] = def_net.get(tid, 0.0) + 0.5 * repl * share
+            tot_net[tid] = tot_net.get(tid, 0.0) + repl * share
     return off_net, def_net, tot_net
 
 
