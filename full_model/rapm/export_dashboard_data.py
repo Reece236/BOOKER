@@ -473,6 +473,7 @@ def build_diagnostics(players):
 def main():
     from forecast import contract_value as cv
     from forecast import leaderboard_data as lb
+    from forecast import minutes_model as mm
     from forecast import player_impacts as pi
 
     ratings = pd.read_csv(HERE / "booker_waa_ratings_by_year.csv")
@@ -481,6 +482,18 @@ def main():
     model_map = lb.load_model_waa_map(data)
     proj_2027 = lb.build_2027_projections(data)
     pos_by_nm, age_map, latest_age, yos = _contract_lookups()
+    # The box table lags play-by-play by a season; merge BookerData's backfilled
+    # ages so the newest class (and everyone's latest season) shows a real age
+    # instead of the 27.0 default.
+    for (nm, s), a in data.AGE.items():
+        age_map.setdefault((nm, int(s)), float(a))
+    latest_seen = {}
+    for (nm, s), a in age_map.items():
+        if nm not in latest_seen or s > latest_seen[nm][0]:
+            latest_seen[nm] = (s, a)
+    for nm, (_, a) in latest_seen.items():
+        latest_age.setdefault(nm, a)
+    proj_min = mm.project_minutes(data, 2027)
     waa_ss = cv.build_waa_by_season()
     if not cv.MODEL_CACHE.exists():
         cv.fit_model(cv.build_waa_name_map(data, 2026))
@@ -558,13 +571,17 @@ def main():
         for prow in data.PLAYERS[PROJ].itertuples():
             pid = int(prow.PLAYER_ID)
             pj = proj_2027.get(pid)
-            mins = float(prow.MINUTES)
+            # projected healthy rotation minutes (not last year's cloned minutes)
+            mins = float(proj_min.get(pid, 0.0))
             if pj is None or mins < 250:
                 continue
             waa = pj["waaProj2027"]
+            nm = cv.norm_name(prow.NAME)
+            age = age_map.get((nm, PROJ), latest_age.get(nm, 27.0))
             row = {
                 "pid": pid, "season": PROJ, "player": prow.NAME,
                 "team": abbr.get(prow.TEAM_ID, "?"), "min": round(mins),
+                "projMin": round(mins), "age": round(float(age), 1),
                 "waa": waa, "waaModel": waa,
                 "waaOff": pj["waaOffProj2027"], "waaDef": pj["waaDefProj2027"],
                 "bookerScore": round(waa * 1440.0 / mins, 2) if mins > 0 else None,
@@ -573,8 +590,6 @@ def main():
                 "grade2027": pj["grade2027"], "projRank2027": pj["projRank2027"],
                 "modelType": "projection", "predictive": True,
             }
-            nm = cv.norm_name(prow.NAME)
-            age = age_map.get((nm, PROJ), latest_age.get(nm, 27.0))
             lb.attach_contract_fields(row, pos_by_nm, {nm: age}, yos, row["bookerScore"])
             players.append(row)
 

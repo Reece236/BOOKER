@@ -21,13 +21,13 @@ def _fake_data(rows, season_prior=2026):
     pl = pd.DataFrame([{
         "PLAYER_ID": r[0], "NAME": r[1], "TEAM_ID": r[2], "MINUTES": r[3],
     } for r in rows])
-    MPG, GAMES = {}, {}
+    MPG, GP = {}, {}
     for pid, name, tid, obs, mpg, games in rows:
         key = pi.norm_name(name)
         if mpg is not None:
             MPG[(key, season_prior)] = mpg
-            GAMES[(key, season_prior)] = games
-    return types.SimpleNamespace(PLAYERS={season: pl}, MPG=MPG, GAMES=GAMES), season
+            GP[(key, season_prior)] = games
+    return types.SimpleNamespace(PLAYERS={season: pl}, MPG=MPG, GP=GP), season
 
 
 def test_injured_star_restored():
@@ -121,9 +121,111 @@ def test_old_behavior_would_inflate():
     print("[ok] reproduced the legacy inflation the fix removes")
 
 
+# ---------------------------------------------------------------------------
+# End-to-end checks on the *real* BookerData constructor, fed a tiny temporary
+# cache. One season of play-by-play (2026) that the box table doesn't cover, a
+# rookie the box table has never seen, and a veteran whose box ages stop at 2025.
+# ---------------------------------------------------------------------------
+VET = "Jaylen Brown"        # in the box table through 2025
+ROOKIE = "Test Sophomore"   # not in the box table at all (2025-26 rookie)
+
+
+def _tiny_real_data(tmp):
+    from pathlib import Path
+    tmp = Path(tmp)
+    ids = {VET: 1, ROOKIE: 2, "Filler A": 3, "Filler B": 4, "Filler C": 5}
+    away = "11, 12, 13, 14, 15"
+    stints = []
+    for g in range(60):                       # vet plays 60 games, rookie 50
+        home = [1, 3, 4, 5] + ([2] if g < 50 else [6])
+        stints.append({"GAME_ID": 1000 + g, "PERIOD": 1,
+                       "HOME_LINEUP": ", ".join(map(str, home)), "AWAY_LINEUP": away,
+                       "POSS": 50, "Y": 0.0})
+    pd.DataFrame(stints).to_csv(tmp / "stints_2026.csv", index=False)
+    roster = pd.DataFrame([{"PLAYER_ID": pid, "NAME": nm, "TEAM_ID": 99,
+                            "MINUTES": {1: 2100, 2: 1100}.get(pid, 1500)}
+                           for nm, pid in ids.items()])
+    for s in (2026, 2027):                    # 2027 = cloned projection roster
+        roster.to_csv(tmp / f"players_{s}.csv", index=False)
+        pd.DataFrame([{"TEAM_ID": 99, "ABBR": "TST"}]).to_csv(
+            tmp / f"teams_{s}.csv", index=False)
+        pd.DataFrame([{"GAME_ID": 1, "DATE": f"{s}-01-01", "HOME": "TST", "AWAY": "OPP",
+                       "HOME_WIN": 1, "SEASON_TYPE": "Regular Season"}]).to_csv(
+            tmp / f"games_{s}.csv", index=False)
+    pd.DataFrame(columns=["team_abbr", "season", "actual_wins", "predicted_wins"]).to_csv(
+        tmp / "team_predictions.csv", index=False)
+
+    old = (pi.CACHE, pi.TEAM_PRED)
+    pi.CACHE, pi.TEAM_PRED = tmp, tmp / "team_predictions.csv"
+    try:
+        data = pi.BookerData(seasons=range(2026, 2028))
+    finally:
+        pi.CACHE, pi.TEAM_PRED = old
+    return data, ids
+
+
+def test_real_data_end_to_end():
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        data, ids = _tiny_real_data(tmp)
+
+    # the season schedules must survive (regression: GAMES was once clobbered by
+    # the games-played dict, silently breaking preseason/trade/export)
+    assert isinstance(data.GAMES.get(2026), pd.DataFrame), "schedule dict was overwritten"
+    print("[ok] season schedules intact (data.GAMES)")
+
+    rk, vk = pi.norm_name(ROOKIE), pi.norm_name(VET)
+    # newcomer: ROOKIE_AGE in his first season, +1 the next
+    assert data.AGE[(rk, 2026)] == pi.ROOKIE_AGE and data.AGE[(rk, 2027)] == pi.ROOKIE_AGE + 1
+    # veteran: extrapolated from his last box age
+    assert abs(data.AGE[(vk, 2026)] - (data.AGE[(vk, 2025)] + 1)) < 1e-9
+    print(f"[ok] ages backfilled: sophomore {data.AGE[(rk, 2027)]:.0f} in 2027, "
+          f"vet {data.AGE[(vk, 2025)]:.1f} -> {data.AGE[(vk, 2026)]:.1f}")
+
+    # sophomore role rate comes from stints: 1,100 min / 50 games = 22 mpg
+    mins = mm.project_minutes(data, 2027)
+    expect = 22.0 * pi.TARGET_GAMES
+    assert abs(mins[ids[ROOKIE]] - expect) < 1.0, f"sophomore {mins[ids[ROOKIE]]:.0f} vs {expect:.0f}"
+    print(f"[ok] sophomore projected from stint mpg: {mins[ids[ROOKIE]]:.0f} min "
+          f"(raw fallback would have been 1100)")
+
+    # sophomore gets the young-player aging bump from his 2026 season
+    _, last_age = pi._decayed_priors(data, [2026], 2027)
+    assert last_age[ids[ROOKIE]] == (2026, pi.ROOKIE_AGE)
+    bump = pi.aged_value({ids[ROOKIE]: 0.0}, ids[ROOKIE], last_age, 2027)
+    assert bump > 0.3, f"aging bump {bump:.2f}"
+    print(f"[ok] sophomore aged from his rookie season: +{bump:.2f}/100 growth")
+    return data, ids, mins
+
+
+def test_projected_presence_keeps_observed_credibility():
+    from . import enhanced_impacts as ei
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        data, ids = _tiny_real_data(tmp)
+    pids = list(ids.values())
+    enh = types.SimpleNamespace(
+        off={p: 1.5 for p in pids}, def_={p: 1.0 for p in pids},
+        total={p: 2.5 for p in pids}, prior={p: -1.0 for p in pids}, last_age={})
+    k = 100.0   # large k so 2-decimal rounding can't mask a difference
+    obs = {r["pid"]: r for r in ei.player_waa_components(data, 2027, k, enh)}
+    proj_min = {p: 2000.0 for p in pids}
+    prj = {r["pid"]: r for r in ei.player_waa_components(
+        data, 2027, k, enh, proj_minutes=proj_min, budget=pi.TEAM_BUDGET)}
+    tmin = sum(float(m) for m in data.PLAYERS[2027].MINUTES)
+    for p in pids:
+        rate_obs = obs[p]["waa_total"] / (k * obs[p]["minutes"] / (tmin / 5.0))
+        rate_prj = prj[p]["waa_total"] / (k * 2000.0 / (pi.TEAM_BUDGET / 5.0))
+        assert abs(rate_obs - rate_prj) < 0.01, (p, rate_obs, rate_prj)
+        assert prj[p]["minutes"] == 2000.0
+    print("[ok] projected presence: same shrunk rate (credibility on observed minutes)")
+
+
 if __name__ == "__main__":
     test_injured_star_restored()
     test_minutes_not_sorted_by_rating()
     test_cutting_deep_bench_is_a_non_event()
     test_old_behavior_would_inflate()
+    test_real_data_end_to_end()
+    test_projected_presence_keeps_observed_credibility()
     print("\nall checks passed")

@@ -8,6 +8,7 @@ import pandas as pd
 
 from . import contract_value as cv
 from . import enhanced_impacts as ei
+from . import minutes_model as mm
 from . import player_impacts as pi
 
 HERE = Path(__file__).resolve().parent.parent
@@ -227,7 +228,12 @@ def build_2027_projections(data=None):
 
     k, _ = pi.fit_net_to_wins(data, train)
     enh = ei.build_enhanced(data, train, season)
-    comps = ei.player_waa_components(data, season, k, enh)
+    # value = rate x *projected healthy* workload, not last year's cloned
+    # (injury-shortened) minutes; the pool filter then admits restored stars and
+    # drops garbage-time-only players
+    proj = mm.project_minutes(data, season)
+    comps = ei.player_waa_components(data, season, k, enh,
+                                     proj_minutes=proj, budget=pi.TEAM_BUDGET)
     pool = [c for c in comps if c["minutes"] >= MIN_PROJ_MINUTES]
     if not pool:
         return {}
