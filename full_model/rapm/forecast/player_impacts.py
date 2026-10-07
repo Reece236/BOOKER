@@ -56,6 +56,8 @@ TEAM_BUDGET = SEASON_GAMES * TEAM_MIN_PER_GAME   # 19,680 player-minutes / team
 TARGET_GAMES = 72             # healthy-but-realistic availability (stars rest ~10)
 MPG_CAP = 36.0                # nobody is projected above ~36 minutes per game
 REPLACEMENT_IMPACT = -2.5     # net impact / 100 poss of a replacement-level filler
+ROOKIE_AGE = 20.0             # assumed age in a player's first season when the
+                              # box table has no record of him yet
 
 CONFERENCE = {
     "ATL": "E", "BOS": "E", "BRK": "E", "CHI": "E", "CHO": "E", "CLE": "E",
@@ -120,13 +122,36 @@ class BookerData:
         # pieces so games/minutes reflect the full season. mpg encodes the coach's
         # real role independent of the *rating* -- an injured star keeps starter
         # mpg while logging few games; a garbage-time bench guy stays low.
-        self.GAMES, self.MPG = {}, {}
+        # (Named GP, not GAMES: self.GAMES already holds each season's schedule.)
+        self.GP, self.MPG = {}, {}
         if "games" in bk.columns:
             for (nm, ss), g in bk.groupby(["nm", "season"]):
                 gp = float(g.games.sum())
                 mp = float(g.minutesPlayed.sum())
-                self.GAMES[(nm, ss)] = gp
+                self.GP[(nm, ss)] = gp
                 self.MPG[(nm, ss)] = mp / gp if gp > 0 else 0.0
+
+        # Backfill ages for rostered player-seasons the box table doesn't cover.
+        # The box table lags the play-by-play feed by a season, so without this the
+        # newest draft class has no age at all (no aging curve, displayed as 27)
+        # and everyone's latest season is missing. Extrapolate from the nearest
+        # known box age; true newcomers start at ROOKIE_AGE in their first season.
+        known = {}
+        for (nm, ss), a in self.AGE.items():
+            known.setdefault(nm, []).append((ss, a))
+        first_seen = {}
+        for s in sorted(self.PLAYERS):
+            for nm in self.PLAYERS[s].NAME.map(norm_name):
+                first_seen.setdefault(nm, s)
+        for s in sorted(self.PLAYERS):
+            for nm in set(self.PLAYERS[s].NAME.map(norm_name)):
+                if (nm, s) in self.AGE:
+                    continue
+                if nm in known:
+                    s0, a0 = min(known[nm], key=lambda t: abs(t[0] - s))
+                    self.AGE[(nm, s)] = a0 + (s - s0)
+                else:
+                    self.AGE[(nm, s)] = ROOKIE_AGE + (s - first_seen[nm])
 
         tp = pd.read_csv(TEAM_PRED)
         self.ACTUAL_WINS = {(r.team_abbr, int(r.season)): r.actual_wins
@@ -179,6 +204,11 @@ def _decayed_priors(data, train_seasons, target_season):
         pl = data.PLAYERS[s]
         for pid, nm, mn in zip(pl.PLAYER_ID, pl.NAME, pl.MINUTES):
             key = norm_name(nm)
+            # age the player from the latest season he actually played, even when
+            # the box table has no BPM for it (newest class / box-table lag)
+            ag = data.AGE.get((key, s))
+            if ag is not None:
+                last_age[pid] = (s, ag)
             bpm = data.BOX.get((key, s))
             if bpm is None:
                 continue
@@ -186,9 +216,6 @@ def _decayed_priors(data, train_seasons, target_season):
             wbpm[pid] = wbpm.get(pid, 0.0) + w * mn * bpm
             wmin[pid] = wmin.get(pid, 0.0) + w * mn
             wsum[pid] = wsum.get(pid, 0.0) + mn
-            ag = data.AGE.get((key, s))
-            if ag is not None:
-                last_age[pid] = (s, ag)
     prior = {}
     for pid in wmin:
         raw = wbpm[pid] / wmin[pid] if wmin[pid] > 0 else PRIOR_BASE

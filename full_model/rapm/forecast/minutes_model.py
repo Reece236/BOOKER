@@ -35,17 +35,49 @@ SEASON_GAMES = pi.SEASON_GAMES
 TEAM_BUDGET = pi.TEAM_BUDGET
 
 
+def _stint_role(data, season):
+    """(games, mpg) per normalized name for `season`, from play-by-play stints.
+
+    The box table lags the play-by-play feed by a season, so this is the only role
+    signal for the newest draft class (and for everyone's latest season). Games =
+    distinct GAME_IDs the player appears in; minutes come from the roster file.
+    """
+    stints = getattr(data, "STINTS", {}).get(season)
+    pl = data.PLAYERS.get(season)
+    if stints is None or pl is None or "GAME_ID" not in stints.columns:
+        return {}
+    games = defaultdict(set)
+    for gid, hl, al in zip(stints.GAME_ID, stints.home, stints.away):
+        for p in hl:
+            games[int(p)].add(gid)
+        for p in al:
+            games[int(p)].add(gid)
+    mins, gp = defaultdict(float), defaultdict(set)
+    for pid, name, mn in zip(pl.PLAYER_ID, pl.NAME, pl.MINUTES):
+        key = pi.norm_name(name)
+        mins[key] += float(mn or 0.0)
+        gp[key] |= games.get(int(pid), set())   # traded players: union of games
+    return {nm: (len(gp[nm]), mins[nm] / len(gp[nm])) for nm in mins if gp[nm]}
+
+
 def _weighted_mpg(data, season):
     """Recency-weighted minutes-per-game per normalized name, from seasons < season.
 
     mpg within each season is weighted by games played (a 70-game season's role is
-    more reliable than a 10-game cameo) and by DECAY recency toward `season`.
+    more reliable than a 10-game cameo) and by DECAY recency toward `season`. Box
+    stats are used where available; play-by-play stints fill player-seasons the
+    box table doesn't cover yet.
     """
-    wnum, wden = {}, {}
-    for (nm, ss), mpg in data.MPG.items():
+    role = {(nm, ss): (data.GP.get((nm, ss), 0.0), mpg)
+            for (nm, ss), mpg in data.MPG.items() if ss < season}
+    for ss in getattr(data, "STINTS", {}):
         if ss >= season:
             continue
-        gp = data.GAMES.get((nm, ss), 0.0)
+        for nm, gm in _stint_role(data, ss).items():
+            role.setdefault((nm, ss), gm)
+
+    wnum, wden = {}, {}
+    for (nm, ss), (gp, mpg) in role.items():
         if gp <= 0:
             continue
         w = DECAY ** (season - 1 - ss) * gp
