@@ -45,6 +45,24 @@ LEAGUE_PPP100 = 108.0  # baseline points scored per 100 possessions
 HOME_COURT_ADV = 2.6          # points of home edge per game
 GAME_MARGIN_SD = 13.3         # std of a single-game point margin
 
+# --- projected-minutes / rotation model ------------------------------------
+# Future minutes are projected as a *healthy* workload (role rate x games) and
+# allocated within a fixed team-minutes budget, rather than cloning last year's
+# injury-shortened totals. A team must fill TEAM_MIN_PER_GAME minutes each game;
+# minutes the roster does not cover fall to a replacement-level player.
+SEASON_GAMES = 82             # games in a regular season
+TEAM_MIN_PER_GAME = 240.0     # 5 positions x 48 minutes
+TEAM_BUDGET = SEASON_GAMES * TEAM_MIN_PER_GAME   # 19,680 player-minutes / team
+TARGET_GAMES = 72             # healthy-but-realistic availability (stars rest ~10)
+MPG_CAP = 36.0                # nobody is projected above ~36 minutes per game
+REPLACEMENT_IMPACT = -2.5     # net impact / 100 poss of a replacement-level filler (minutes a
+                              # CUT/short roster leaves unfilled -> street free agents).
+                              # NOT the right value for the share model's unallocated ~10%
+                              # (in-season additions, empirically ~-0.5: see
+                              # minutes_share.replacement_rating) -- pass replacement=.
+ROOKIE_AGE = 20.0             # assumed age in a player's first season when the
+                              # box table has no record of him yet
+
 CONFERENCE = {
     "ATL": "E", "BOS": "E", "BRK": "E", "CHI": "E", "CHO": "E", "CLE": "E",
     "DET": "E", "IND": "E", "MIA": "E", "MIL": "E", "NYK": "E", "ORL": "E",
@@ -114,6 +132,41 @@ class BookerData:
                     for (nm, ss), g in bk.groupby(["nm", "season"])}
         self.AGE = {(nm, ss): np.average(g.age, weights=g.minutesPlayed.clip(lower=1))
                     for (nm, ss), g in bk.groupby(["nm", "season"])}
+        # Health-free role signal: minutes-per-game and games played per
+        # (name, season). A traded player has multiple rows in a season; sum the
+        # pieces so games/minutes reflect the full season. mpg encodes the coach's
+        # real role independent of the *rating* -- an injured star keeps starter
+        # mpg while logging few games; a garbage-time bench guy stays low.
+        # (Named GP, not GAMES: self.GAMES already holds each season's schedule.)
+        self.GP, self.MPG = {}, {}
+        if "games" in bk.columns:
+            for (nm, ss), g in bk.groupby(["nm", "season"]):
+                gp = float(g.games.sum())
+                mp = float(g.minutesPlayed.sum())
+                self.GP[(nm, ss)] = gp
+                self.MPG[(nm, ss)] = mp / gp if gp > 0 else 0.0
+
+        # Backfill ages for rostered player-seasons the box table doesn't cover.
+        # The box table lags the play-by-play feed by a season, so without this the
+        # newest draft class has no age at all (no aging curve, displayed as 27)
+        # and everyone's latest season is missing. Extrapolate from the nearest
+        # known box age; true newcomers start at ROOKIE_AGE in their first season.
+        known = {}
+        for (nm, ss), a in self.AGE.items():
+            known.setdefault(nm, []).append((ss, a))
+        first_seen = {}
+        for s in sorted(self.PLAYERS):
+            for nm in self.PLAYERS[s].NAME.map(norm_name):
+                first_seen.setdefault(nm, s)
+        for s in sorted(self.PLAYERS):
+            for nm in set(self.PLAYERS[s].NAME.map(norm_name)):
+                if (nm, s) in self.AGE:
+                    continue
+                if nm in known:
+                    s0, a0 = min(known[nm], key=lambda t: abs(t[0] - s))
+                    self.AGE[(nm, s)] = a0 + (s - s0)
+                else:
+                    self.AGE[(nm, s)] = ROOKIE_AGE + (s - first_seen[nm])
 
         tp = pd.read_csv(TEAM_PRED)
         self.ACTUAL_WINS = {(r.team_abbr, int(r.season)): r.actual_wins
@@ -166,6 +219,11 @@ def _decayed_priors(data, train_seasons, target_season):
         pl = data.PLAYERS[s]
         for pid, nm, mn in zip(pl.PLAYER_ID, pl.NAME, pl.MINUTES):
             key = norm_name(nm)
+            # age the player from the latest season he actually played, even when
+            # the box table has no BPM for it (newest class / box-table lag)
+            ag = data.AGE.get((key, s))
+            if ag is not None:
+                last_age[pid] = (s, ag)
             bpm = data.BOX.get((key, s))
             if bpm is None:
                 continue
@@ -173,9 +231,6 @@ def _decayed_priors(data, train_seasons, target_season):
             wbpm[pid] = wbpm.get(pid, 0.0) + w * mn * bpm
             wmin[pid] = wmin.get(pid, 0.0) + w * mn
             wsum[pid] = wsum.get(pid, 0.0) + mn
-            ag = data.AGE.get((key, s))
-            if ag is not None:
-                last_age[pid] = (s, ag)
     prior = {}
     for pid in wmin:
         raw = wbpm[pid] / wmin[pid] if wmin[pid] > 0 else PRIOR_BASE
@@ -356,11 +411,18 @@ def aged_value(impact, pid, last_age, target_season):
 
 
 def aggregate_net(data, impact, season, last_age=None, target_season=None,
-                  minutes=None):
+                  minutes=None, budget=None, replacement=None):
     """Predicted team net rating for `season` rosters using player impacts.
 
     `minutes` optionally overrides the per-player minute weights (dict pid->min);
     otherwise the season's observed minutes are used.
+
+    `budget` optionally fixes the team-minutes denominator (e.g. TEAM_BUDGET =
+    82*240). When set, presence is `min / (budget/5)` and any minutes the roster
+    leaves unfilled (budget - sum) are charged to a REPLACEMENT_IMPACT filler, so
+    a team is always evaluated over a full 240-min/game rotation. When None the
+    legacy own-sum normalization is used (keeps historical calibration paths and
+    `pick_alpha` unchanged).
     """
     pl = data.PLAYERS[season]
     mins = minutes if minutes is not None else dict(zip(pl.PLAYER_ID, pl.MINUTES))
@@ -373,8 +435,16 @@ def aggregate_net(data, impact, season, last_age=None, target_season=None,
             continue
         val = aged_value(impact, pid, last_age, target_season) if target_season else \
             impact.get(pid, PRIOR_BASE)
-        presence = mins.get(pid, 0.0) / (tmin[tid] / 5.0)
+        denom = (budget if budget else tmin[tid]) / 5.0
+        presence = mins.get(pid, 0.0) / denom
         pred[tid] = pred.get(tid, 0.0) + val * presence
+    if budget:
+        for tid, filled in tmin.items():
+            if filled <= 0:
+                continue
+            shortfall = max(0.0, budget - filled)
+            rp = REPLACEMENT_IMPACT if replacement is None else replacement
+            pred[tid] = pred.get(tid, 0.0) + rp * (shortfall / (budget / 5.0))
     return pred
 
 

@@ -1,0 +1,109 @@
+name: Regenerate dashboard data.js
+
+# Manual ("Run workflow") rebuild of the dashboard payload, so the headline
+# numbers (healthy-minutes projections, team win totals, standings) can be
+# refreshed from the GitHub UI -- no local machine required.
+#
+# WHY A CACHE UPLOAD IS NEEDED
+# The regeneration reads the ~1.8 GB stint/player/game cache (full_model/rapm/cache/),
+# which is git-ignored and built by scraping stats.nba.com. stats.nba.com blocks
+# datacenter IPs, so GitHub runners cannot build the cache themselves. Instead,
+# upload your already-built cache ONCE and this workflow reuses it:
+#
+#   # on your machine, from the repo root:
+#   cd full_model/rapm
+#   tar -czf cache.tar.gz cache            # (or: tar --zstd -cf cache.tar.zst cache)
+#   # create/refresh a release holding the cache as an asset:
+#   gh release create cache-latest cache.tar.gz -t "Pipeline cache" -n "data.js source cache" \
+#     || gh release upload cache-latest cache.tar.gz --clobber
+#
+# Then run this workflow (Actions tab -> Regenerate dashboard data.js -> Run workflow).
+# It downloads that asset, runs the export (and optionally the preseason sim),
+# commits the new data.js to main, and the Pages workflow redeploys the site.
+#
+# You can also point it at any other download URL via the cache_url input.
+
+on:
+  workflow_dispatch:
+    inputs:
+      cache_url:
+        description: "Direct download URL for the cache archive (.tar.gz or .tar.zst). Leave blank to use the 'cache-latest' release asset."
+        required: false
+        default: ""
+      run_preseason:
+        description: "Also run the preseason Monte-Carlo sim (refreshes standings / sim win totals). Slower."
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: write        # commit the regenerated data.js back to main
+
+concurrency:
+  group: regenerate-data
+  cancel-in-progress: false
+
+jobs:
+  regenerate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r full_model/rapm/data_ingest/requirements.txt
+
+      - name: Fetch pipeline cache
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CACHE_URL: ${{ inputs.cache_url }}
+        run: |
+          set -euo pipefail
+          mkdir -p full_model/rapm/cache
+          if [ -n "${CACHE_URL}" ]; then
+            echo "Downloading cache from provided URL"
+            curl -fsSL "${CACHE_URL}" -o cache_archive
+          else
+            echo "Downloading cache from the 'cache-latest' release"
+            asset=$(gh release view cache-latest -R "${GITHUB_REPOSITORY}" \
+              --json assets --jq '.assets[0].name' 2>/dev/null || true)
+            if [ -z "${asset}" ]; then
+              echo "::error::No cache available. Upload the cache to a 'cache-latest' release (see this workflow's header) or pass cache_url."
+              exit 1
+            fi
+            gh release download cache-latest -R "${GITHUB_REPOSITORY}" -p "${asset}" -O cache_archive
+          fi
+          # extract (.tar.gz or .tar.zst); archive is expected to contain a top-level cache/ dir
+          if tar -tzf cache_archive >/dev/null 2>&1; then
+            tar -xzf cache_archive -C full_model/rapm
+          else
+            sudo apt-get update -qq && sudo apt-get install -y -qq zstd
+            tar --use-compress-program=unzstd -xf cache_archive -C full_model/rapm
+          fi
+          echo "cache files: $(ls full_model/rapm/cache | wc -l)"
+          test -n "$(ls -A full_model/rapm/cache)" || { echo "::error::cache is empty after extraction"; exit 1; }
+
+      - name: Run preseason sim
+        if: ${{ inputs.run_preseason }}
+        working-directory: full_model/rapm
+        run: python -m forecast.preseason
+
+      - name: Rebuild data.js
+        working-directory: full_model/rapm
+        run: python export_dashboard_data.py
+
+      - name: Commit and push
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add full_model/rapm/dashboard/data/data.js
+          if git diff --cached --quiet; then
+            echo "data.js unchanged - nothing to commit"
+            exit 0
+          fi
+          git commit -m "Regenerate data.js (healthy-minutes projection)"
+          git push origin HEAD:main

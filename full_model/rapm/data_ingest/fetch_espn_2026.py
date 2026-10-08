@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 
-RAPM = Path("/Users/reececalvin/BOOKER/BOOKER/full_model/rapm")
+RAPM = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(RAPM))
 from forecast import player_impacts as pi
 CACHE = RAPM / "cache"

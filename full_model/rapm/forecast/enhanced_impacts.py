@@ -487,8 +487,16 @@ def build_enhanced(data, train_seasons, target_season, alpha=None,
     )
 
 
-def aggregate_off_def(data, enh, season, target_season=None, minutes=None):
-    """Team-level offensive and defensive net ratings."""
+def aggregate_off_def(data, enh, season, target_season=None, minutes=None,
+                      budget=None, replacement=None):
+    """Team-level offensive and defensive net ratings.
+
+    `budget` optionally fixes the team-minutes denominator (e.g. pi.TEAM_BUDGET)
+    and charges any unfilled minutes to a replacement-level player, so cutting a
+    deep-bench scrub can't renormalize the survivors upward. See
+    `player_impacts.aggregate_net` for the rationale; None keeps the legacy
+    own-sum normalization.
+    """
     pl = data.PLAYERS[season]
     mins = minutes if minutes is not None else dict(zip(pl.PLAYER_ID, pl.MINUTES))
     tmin = {}
@@ -500,23 +508,44 @@ def aggregate_off_def(data, enh, season, target_season=None, minutes=None):
     for pid, tid in zip(pl.PLAYER_ID, pl.TEAM_ID):
         if tid not in tmin or tmin[tid] <= 0:
             continue
-        pres = mins.get(pid, 0.0) / (tmin[tid] / 5.0)
+        denom = (budget if budget else tmin[tid]) / 5.0
+        pres = mins.get(pid, 0.0) / denom
         o = pi.aged_value(enh.off, pid, enh.last_age, ts) if ts else enh.off.get(pid, 0)
         d = pi.aged_value(enh.def_, pid, enh.last_age, ts) if ts else enh.def_.get(pid, 0)
         t = pi.aged_value(enh.total, pid, enh.last_age, ts) if ts else enh.total.get(pid, 0)
         off_net[tid] = off_net.get(tid, 0.0) + o * pres
         def_net[tid] = def_net.get(tid, 0.0) + d * pres
         tot_net[tid] = tot_net.get(tid, 0.0) + t * pres
+    if budget:
+        # unfilled minutes -> replacement-level filler (split evenly off/def)
+        repl = pi.REPLACEMENT_IMPACT if replacement is None else replacement
+        for tid, filled in tmin.items():
+            if filled <= 0:
+                continue
+            share = max(0.0, budget - filled) / (budget / 5.0)
+            off_net[tid] = off_net.get(tid, 0.0) + 0.5 * repl * share
+            def_net[tid] = def_net.get(tid, 0.0) + 0.5 * repl * share
+            tot_net[tid] = tot_net.get(tid, 0.0) + repl * share
     return off_net, def_net, tot_net
 
 
-def player_waa_components(data, season, k_wins, enh, minutes=None):
-    """Per-player offensive/defensive/total WAA wins on a roster."""
+def player_waa_components(data, season, k_wins, enh, minutes=None,
+                          proj_minutes=None, budget=None):
+    """Per-player offensive/defensive/total WAA wins on a roster.
+
+    `proj_minutes` (+ `budget`, default pi.TEAM_BUDGET) switches presence to
+    projected healthy rotation minutes over a fixed team budget -- for forward
+    projections, so an injured star isn't credited with last year's shortened
+    workload. Credibility shrinkage still keys on observed minutes (the sample
+    actually played); the reported `minutes` becomes the projected workload.
+    """
     pl = data.PLAYERS[season]
     mins = minutes if minutes is not None else dict(zip(pl.PLAYER_ID, pl.MINUTES))
     tmin = {}
     for pid, tid in zip(pl.PLAYER_ID, pl.TEAM_ID):
         tmin[tid] = tmin.get(tid, 0.0) + mins.get(pid, 0.0)
+    if proj_minutes is not None:
+        budget = budget or pi.TEAM_BUDGET
 
     pids = [int(pid) for pid in pl.PLAYER_ID]
     shares = box_off_def_shares(data, season, pids, include_target=True)
@@ -527,8 +556,14 @@ def player_waa_components(data, season, k_wins, enh, minutes=None):
             continue
         pid = int(pid)
         mn_obs = float(mins.get(pid, mn))
-        pres = mn_obs / (tmin[tid] / 5.0)
-        pres_32 = STANDARD_SEASON_MIN / (tmin[tid] / 5.0)
+        if proj_minutes is not None:
+            mn_out = float(proj_minutes.get(pid, 0.0))
+            pres = mn_out / (budget / 5.0)
+            pres_32 = STANDARD_SEASON_MIN / (budget / 5.0)
+        else:
+            mn_out = mn_obs
+            pres = mn_obs / (tmin[tid] / 5.0)
+            pres_32 = STANDARD_SEASON_MIN / (tmin[tid] / 5.0)
         o = pi.aged_value(enh.off, pid, enh.last_age, season)
         d = pi.aged_value(enh.def_, pid, enh.last_age, season)
         t = pi.aged_value(enh.total, pid, enh.last_age, season)
@@ -545,7 +580,7 @@ def player_waa_components(data, season, k_wins, enh, minutes=None):
         ab = data.abbr_of.get(tid, "?")
         rows.append({
             "pid": pid, "player": nm, "team": ab,
-            "minutes": mn_obs,
+            "minutes": mn_out,
             "impact_off": round(o, 2), "impact_def": round(d, 2), "impact_total": round(t, 2),
             "waa_off": round(k_wins * rank_o * pres, 2),
             "waa_def": round(k_wins * rank_d * pres, 2),

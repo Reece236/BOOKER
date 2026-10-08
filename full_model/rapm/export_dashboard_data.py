@@ -282,6 +282,7 @@ def load_enhanced_players():
 def load_trade():
     try:
         from forecast import player_impacts as pi
+        from forecast import minutes_model as mm
         from forecast.trade_sim import export_trade_payload
         data = pi.BookerData(seasons=range(2015, 2028))
         season = 2027 if 2027 in data.GAMES else max(data.seasons)
@@ -291,7 +292,15 @@ def load_trade():
         from forecast import contract_value as cv
         from forecast import enhanced_impacts as ei
         enh = ei.build_enhanced(data, train, season)
-        _, _, net_tid = ei.aggregate_off_def(data, enh, season, target_season=season)
+        # Roll the roster up over *projected healthy* rotation minutes (fixed
+        # 240-min/game team budget, replacement-level tail) rather than cloned
+        # injury-shortened minutes -- this is what feeds the dashboard win totals
+        # and the Lineup Lab base rotation.
+        proj_min = mm.project_minutes(data, season)
+        budget = pi.TEAM_BUDGET
+        _, _, net_tid = ei.aggregate_off_def(
+            data, enh, season, target_season=season, minutes=proj_min, budget=budget,
+            replacement=mm.replacement_for(data, season))
         waa_map = cv.build_waa_name_map(data, season)
         cv.fit_model(waa_map)
         ages = {}
@@ -322,11 +331,19 @@ def load_trade():
             for rr in pd.read_csv(rvp).sort_values("season").itertuples():
                 role_up[int(rr.PLAYER_ID)] = float(rr.role_upside)
         pl = data.PLAYERS[season]
-        team_min = {}
+        # observed team minutes -- kept only for the BOOKER per-minute rate, which
+        # pairs observed WAA with observed presence
+        obs_team_min = {}
         for pid, tid, mn in zip(pl.PLAYER_ID, pl.TEAM_ID, pl.MINUTES):
             ab = abbr.get(tid)
             if ab:
-                team_min[ab] = team_min.get(ab, 0.0) + float(mn)
+                obs_team_min[ab] = obs_team_min.get(ab, 0.0) + float(mn)
+        # projected rotation minutes per team (~19,680; feeds teamMinutes + Lineup Lab)
+        team_min = {}
+        for pid, tid in zip(pl.PLAYER_ID, pl.TEAM_ID):
+            ab = abbr.get(tid)
+            if ab:
+                team_min[ab] = team_min.get(ab, 0.0) + proj_min.get(int(pid), 0.0)
         # latest sticky grade per player (for trade skill/timeline breakdown)
         glat = {}
         gpath = CACHE / "player_grades.csv"
@@ -337,8 +354,10 @@ def load_trade():
         players = []
         for r in payload["components"]:
             ab = r["team"]
-            tm = team_min.get(ab, 1.0)
+            tm = obs_team_min.get(ab, 1.0)
             pres = r["minutes"] / (tm / 5.0) if tm > 0 else 0
+            pmin = proj_min.get(int(r["pid"]), 0.0)
+            proj_pres = pmin / (budget / 5.0)
             nm = cv.norm_name(r["player"])
             pos = pos_by_nm.get(nm, "SF")
             age = ages.get(nm, 27.0)
@@ -351,10 +370,11 @@ def load_trade():
             g = glat.get(int(r["pid"]))
             players.append({
                 "pid": r["pid"], "player": r["player"], "team": ab,
-                "minutes": int(r["minutes"]),
+                "minutes": int(round(pmin)),
+                "projMin": int(round(pmin)),
                 "impactTotal": r["impact_total"],
                 "impactOff": r["impact_off"], "impactDef": r["impact_def"],
-                "netContrib": round(r["impact_total"] * pres, 2),
+                "netContrib": round(r["impact_total"] * proj_pres, 2),
                 "waaOff": r["waa_off"], "waaDef": r["waa_def"], "waaTotal": r["waa_total"],
                 "pos": pos, "age": round(age, 1), "yearsPro": yp,
                 "grade": (None if g is None else int(g[0])),
@@ -370,6 +390,8 @@ def load_trade():
         return {
             "season": season,
             "k": round(k, 3), "c": round(c, 1),
+            "teamBudget": int(budget),
+            "replacementImpact": pi.REPLACEMENT_IMPACT,
             "teamNet": team_net, "teamWins": team_wins, "teamSimWins": sim_wins,
             "teamMinutes": {k: int(v) for k, v in team_min.items()},
             "players": players,
@@ -645,6 +667,7 @@ def build_diagnostics(players):
 def main():
     from forecast import contract_value as cv
     from forecast import leaderboard_data as lb
+    from forecast import minutes_model as mm
     from forecast import player_impacts as pi
 
     ratings = pd.read_csv(HERE / "booker_waa_ratings_by_year.csv")
@@ -820,6 +843,18 @@ def main():
                 best = d
         return best if best is not None else lst[0][1]
     pos_by_nm, age_map, latest_age, yos = _contract_lookups()
+    # The box table lags play-by-play by a season; merge BookerData's backfilled
+    # ages so the newest class (and everyone's latest season) shows a real age
+    # instead of the 27.0 default.
+    for (nm, s), a in data.AGE.items():
+        age_map.setdefault((nm, int(s)), float(a))
+    latest_seen = {}
+    for (nm, s), a in age_map.items():
+        if nm not in latest_seen or s > latest_seen[nm][0]:
+            latest_seen[nm] = (s, a)
+    for nm, (_, a) in latest_seen.items():
+        latest_age.setdefault(nm, a)
+    proj_min = mm.project_minutes(data, 2027)
     waa_ss = cv.build_waa_by_season()
     if not cv.MODEL_CACHE.exists():
         cv.fit_model(cv.build_waa_name_map(data, 2026))
@@ -958,6 +993,7 @@ def main():
                 row = {
                     "pid": pid, "season": PROJ, "player": prow.NAME,
                     "team": abbr.get(prow.TEAM_ID, "?"), "min": round(mins),
+                    "projMin": round(mins),
                     "grade": g26[f"proj{t}"], "gradeLetter": g26[f"proj{t}Letter"],
                     "age": g26[f"proj{t}Age"],
                     "bookerScore": _age_val(g26["hybBooker"], a0, a1),
