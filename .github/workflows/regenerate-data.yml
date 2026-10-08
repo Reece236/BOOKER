@@ -5,21 +5,27 @@ name: Regenerate dashboard data.js
 # refreshed from the GitHub UI -- no local machine required.
 #
 # WHY A CACHE UPLOAD IS NEEDED
-# The regeneration reads the ~1.8 GB stint/player/game cache (full_model/rapm/cache/),
-# which is git-ignored and built by scraping stats.nba.com. stats.nba.com blocks
-# datacenter IPs, so GitHub runners cannot build the cache themselves. Instead,
-# upload your already-built cache ONCE and this workflow reuses it:
+# The regeneration reads the pipeline cache (full_model/rapm/cache/), which is
+# git-ignored and built by scraping stats.nba.com. stats.nba.com blocks datacenter
+# IPs, so GitHub runners cannot build the cache themselves. Instead, upload your
+# already-built cache and this workflow reuses it.
+#
+# THE REPO IS PUBLIC -> so is the release asset. Upload the SLIM cache only: the
+# export needs ~160 MB of the ~2 GB cache, and the excluded files include betting
+# odds and third-party data (DARKO scrape, BBall-Index LEBRON) that must not be
+# published. The exclusion list lives in full_model/rapm/cache-exclude.txt.
 #
 #   # on your machine, from the repo root:
 #   cd full_model/rapm
-#   tar -czf cache.tar.gz cache            # (or: tar --zstd -cf cache.tar.zst cache)
-#   # create/refresh a release holding the cache as an asset:
-#   gh release create cache-latest cache.tar.gz -t "Pipeline cache" -n "data.js source cache" \
+#   COPYFILE_DISABLE=1 tar -czf cache.tar.gz -X cache-exclude.txt cache
+#   tar -tzf cache.tar.gz | grep -iE "odds|darko|lebron" && echo "STOP: sensitive files"   # must print nothing
+#   gh release create cache-latest cache.tar.gz -t "Pipeline cache" -n "data.js source cache (slim)" \
 #     || gh release upload cache-latest cache.tar.gz --clobber
 #
+# Re-upload whenever the local cache changes (new stints, rosters, ratings refits).
 # Then run this workflow (Actions tab -> Regenerate dashboard data.js -> Run workflow).
-# It downloads that asset, runs the export (and optionally the preseason sim),
-# commits the new data.js to main, and the Pages workflow redeploys the site.
+# It downloads that asset, re-projects minutes shares + runs the preseason sim
+# (optional), rebuilds data.js, commits it to main, and Pages redeploys the site.
 #
 # You can also point it at any other download URL via the cache_url input.
 
@@ -54,7 +60,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install -r full_model/rapm/data_ingest/requirements.txt
+        run: pip install -r full_model/rapm/requirements-ci.txt
 
       - name: Fetch pipeline cache
         env:
@@ -86,6 +92,11 @@ jobs:
           echo "cache files: $(ls full_model/rapm/cache | wc -l)"
           test -n "$(ls -A full_model/rapm/cache)" || { echo "::error::cache is empty after extraction"; exit 1; }
 
+      - name: Re-project minutes shares
+        if: ${{ inputs.run_preseason }}
+        working-directory: full_model/rapm
+        run: python -m forecast.minutes_share
+
       - name: Run preseason sim
         if: ${{ inputs.run_preseason }}
         working-directory: full_model/rapm
@@ -105,5 +116,5 @@ jobs:
             echo "data.js unchanged - nothing to commit"
             exit 0
           fi
-          git commit -m "Regenerate data.js (healthy-minutes projection)"
+          git commit -m "Regenerate data.js (Actions)"
           git push origin HEAD:main

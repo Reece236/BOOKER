@@ -298,9 +298,13 @@ def load_trade():
         # and the Lineup Lab base rotation.
         proj_min = mm.project_minutes(data, season)
         budget = pi.TEAM_BUDGET
+        # rating charged to the DEFAULT roster's unallocated minutes (share model:
+        # in-season additions, ~-0.5); minutes a user frees in the Lineup Lab are
+        # charged at the replacement-level pi.REPLACEMENT_IMPACT instead
+        base_repl = mm.replacement_for(data, season)
         _, _, net_tid = ei.aggregate_off_def(
             data, enh, season, target_season=season, minutes=proj_min, budget=budget,
-            replacement=mm.replacement_for(data, season))
+            replacement=base_repl)
         waa_map = cv.build_waa_name_map(data, season)
         cv.fit_model(waa_map)
         ages = {}
@@ -392,6 +396,7 @@ def load_trade():
             "k": round(k, 3), "c": round(c, 1),
             "teamBudget": int(budget),
             "replacementImpact": pi.REPLACEMENT_IMPACT,
+            "baselineReplacement": round(float(base_repl), 3),
             "teamNet": team_net, "teamWins": team_wins, "teamSimWins": sim_wins,
             "teamMinutes": {k: int(v) for k, v in team_min.items()},
             "players": players,

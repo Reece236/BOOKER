@@ -1,0 +1,15 @@
+cache/odds_*
+cache/odds_archive.json
+cache/darko_*
+cache/lebron_history.csv
+cache/nbastats_*.csv
+cache/_pre_audit_backup
+cache/pbp_2026
+cache/box_2026
+cache/stints_2026_games
+cache/shotdetail_*.csv
+cache/bayesian
+cache/bookerformer_diag
+cache/bias_audit_panel.csv
+cache/*.bak*
+cache/players_2027_espn_raw.csv.tmp

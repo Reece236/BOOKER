@@ -1,0 +1,9 @@
+# Minimal deps for the CI regeneration (minutes_share -> preseason -> export).
+# Full ingest/modeling deps live in data_ingest/requirements.txt.
+pandas>=1.5
+numpy>=1.23
+scipy>=1.9
+scikit-learn>=1.1
+pyarrow>=10.0
+joblib>=1.2
+lxml>=4.9            # pd.read_html (2026_sals.xls is an HTML table)

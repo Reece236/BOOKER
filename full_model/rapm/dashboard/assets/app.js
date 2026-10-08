@@ -1232,7 +1232,14 @@
     const REPL = (D.trade.replacementImpact != null ? D.trade.replacementImpact : -2.5);
     const denom = Math.max(BUDGET, filled) / 5;
     let net = rost.reduce((a, r) => a + r.impactTotal * (r.minutes / denom), 0);
-    net += REPL * (Math.max(0, BUDGET - filled) / denom);
+    // The default rotation's unallocated minutes (in-season additions) are charged at
+    // the same rating the baseline team net used; only minutes the user frees beyond
+    // that go to a replacement-level filler -- so an unedited roster reproduces the
+    // baseline exactly instead of showing a phantom delta.
+    const BASE_REPL = (D.trade.baselineReplacement != null ? D.trade.baselineReplacement : REPL);
+    const baseFill = (D.trade.teamMinutes && D.trade.teamMinutes[LL.team]) || filled;
+    const gapBase = Math.max(0, BUDGET - baseFill), gapNow = Math.max(0, BUDGET - filled);
+    net += (BASE_REPL * Math.min(gapNow, gapBase) + REPL * Math.max(0, gapNow - gapBase)) / denom;
     const wins = Math.max(5, Math.min(82, D.trade.k * net + D.trade.c));
     const champ = champAfter(LL.team, net);
     const bNet = D.trade.teamNet[LL.team];
