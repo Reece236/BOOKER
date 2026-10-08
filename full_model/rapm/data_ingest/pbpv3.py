@@ -47,6 +47,10 @@ def convert(df3):
     sh = pd.to_numeric(df["scoreHome"], errors="coerce")
     sa = pd.to_numeric(df["scoreAway"], errors="coerce")
     df["SCOREMARGIN"] = sh - sa
+    # per-side running score -> real HOME_PTS / AWAY_PTS per stint (needed to identify
+    # the offense/defense split; margin alone only identifies the total)
+    df["HOME_SCORE"] = sh
+    df["AWAY_SCORE"] = sa
 
     is_home = df["location"].astype(str) == "h"
     df["DESCRIPTION"] = df["description"]
@@ -99,7 +103,7 @@ def convert(df3):
     df["PERSON3TYPE"] = 0
 
     cols = ["GAME_ID", "PERIOD", "PCTIMESTRING", "EVENTMSGTYPE", "SCOREMARGIN",
-            "EVENTNUM", "DESCRIPTION", "HOMEDESCRIPTION", "PLAYER1_ID",
+            "HOME_SCORE", "AWAY_SCORE", "EVENTNUM", "DESCRIPTION", "HOMEDESCRIPTION", "PLAYER1_ID",
             "PLAYER1_NAME", "PLAYER1_TEAM_ID", "PLAYER2_ID", "PLAYER2_NAME",
             "PLAYER2_TEAM_ID", "PLAYER3_ID", "PLAYER3_NAME", "PLAYER3_TEAM_ID",
             "PERSON1TYPE", "PERSON2TYPE", "PERSON3TYPE"]

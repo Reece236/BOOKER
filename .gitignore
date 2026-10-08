@@ -22,3 +22,12 @@ full_model/rapm/waa_handoff/data/cache/
 # Backups / scratch
 *.bak
 *.bak[0-9]
+Basketball Bible.md
+
+# Betting/odds data -- repo is PUBLIC; never commit (see full_model/rapm/HANDOFF.md §1)
+full_model/oddsData.csv
+full_model/nba_main_lines.csv
+full_model/nba_detailed_odds.csv
+# Generated artifacts / audit backups
+*.rds
+full_model/rapm/cache/_pre_audit_backup/

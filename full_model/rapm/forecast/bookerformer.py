@@ -109,6 +109,11 @@ SEED = 17
 MAX_EPOCHS = int(os.environ.get("BF_EPOCHS", 60))
 PATIENCE = int(os.environ.get("BF_PATIENCE", 8))
 MC_SAMPLES = int(os.environ.get("BF_MC", 40))  # T stochastic passes for the predictive dist
+# After early stopping picks the epoch count on the chronologically-latest 10% slice,
+# refit on ALL observations for that many epochs. Without this the most recent ~6
+# weeks of the latest season -- the highest-decay-weight data -- never entered the
+# ratings. BF_REFIT_FULL=0 restores the old (val-slice-excluded) behaviour.
+REFIT_FULL = os.environ.get("BF_REFIT_FULL", "1") != "0"
 # Offensive prior nudge from the shot-quality skill composite, in points/100 per SD.
 # Moderate (1.0): skilled creators start ~1 pt/100 higher per SD of skill, then the
 # RAPM stint likelihood pulls back toward results. Set BF_SKILL_NUDGE=0 to disable.
@@ -145,6 +150,7 @@ class FormerData:
     y: np.ndarray                  # [N] centered target (offense pts/100 - LEAGUE)
     w: np.ndarray                  # [N] sample weight (POSS * decay)
     order: np.ndarray              # [N] chronological-ish order key for val split
+    league_ref: float = LEAGUE     # latest training season's league offense /100
     tau_off: np.ndarray = None     # [P] per-player offensive prior std (usage-tightened)
     tau_def: np.ndarray = None     # [P] per-player defensive prior std
     off_ctx: dict = field(default_factory=dict)   # pid -> list[(O[5], D[5])]
@@ -191,6 +197,15 @@ def _usage_map(data, train_seasons, target_season, pids):
                 acc[p] = acc.get(p, 0.0) + w * u
                 wsum[p] = wsum.get(p, 0.0) + w
     return {p: acc[p] / wsum[p] for p in acc if wsum[p] > 0}
+
+
+def _season_league(d):
+    """Possession-weighted league offense (pts/100 stint-poss) for one season's stints."""
+    if "HOME_PTS" in d.columns and "AWAY_PTS" in d.columns:
+        poss = float(d.POSS.sum())
+        if poss > 0:
+            return 100.0 * float(d.HOME_PTS.sum() + d.AWAY_PTS.sum()) / (2.0 * poss)
+    return LEAGUE
 
 
 def prepare_data(data, train_seasons, target_season) -> FormerData:
@@ -258,12 +273,21 @@ def prepare_data(data, train_seasons, target_season) -> FormerData:
     off_rows, def_rows, ys, ws, orders = [], [], [], [], []
     off_ctx = {p: [] for p in pids}
     def_ctx = {p: [] for p in pids}
+    league_ref = LEAGUE
     for s in train_seasons:
         d = data.STINTS[s]
         dw = DECAY ** (target_season - 1 - s)
         if "Y_OFF_HOME" not in d.columns or "Y_DEF_HOME" not in d.columns:
             raise ValueError(f"stints_{s}.csv missing Y_OFF_HOME/Y_DEF_HOME; "
                              "run stint_off_def.enrich_season first")
+        if "PTS_SOURCE" in d.columns and (d.PTS_SOURCE != "pbp").any():
+            print(f"  WARNING: stints_{s} has synthetic O/D targets -- offense/defense "
+                  "split NOT identified (run data_ingest/backfill_stint_points.py)")
+        # The model has no intercept, so center each season's offense targets on that
+        # season's actual league scoring level (98 -> 114 pts/100 over 2015-2026). A
+        # fixed 108 would load the era's scoring drift onto every player's a_off/a_def.
+        lg = _season_league(d)
+        league_ref = lg
         gid = d.GAME_ID.to_numpy()
         for hl, al, poss, yo, yd, g in zip(d.home, d.away, d.POSS,
                                            d.Y_OFF_HOME, d.Y_DEF_HOME, gid):
@@ -275,10 +299,10 @@ def prepare_data(data, train_seasons, target_season) -> FormerData:
             order_key = s * 10_000_000 + int(g) % 10_000_000
             # home offense vs away defense
             off_rows.append(ho); def_rows.append(aw)
-            ys.append(float(yo) - LEAGUE); ws.append(wt); orders.append(order_key)
+            ys.append(float(yo) - lg); ws.append(wt); orders.append(order_key)
             # away offense vs home defense
             off_rows.append(aw); def_rows.append(ho)
-            ys.append(float(yd) - LEAGUE); ws.append(wt); orders.append(order_key)
+            ys.append(float(yd) - lg); ws.append(wt); orders.append(order_key)
             # leave-one-out contexts (store the parameter-row lineups)
             for p in hl:
                 off_ctx[p].append((ho, aw))
@@ -295,6 +319,7 @@ def prepare_data(data, train_seasons, target_season) -> FormerData:
         y=np.clip(np.array(ys, dtype=np.float32), -Y_CLIP, Y_CLIP),
         w=np.array(ws, dtype=np.float32),
         order=np.array(orders, dtype=np.int64),
+        league_ref=float(league_ref),
         tau_off=tau_off, tau_def=tau_def,
         off_ctx=off_ctx, def_ctx=def_ctx,
     )
@@ -510,9 +535,45 @@ def train_model(fd: FormerData, use_attention=True, verbose=False):
                 break
     if best_state is not None:
         model.load_state_dict(best_state)
+    if REFIT_FULL and len(va):
+        model = _refit_all(fd, use_attention, best_epoch + 1, off_idx, def_idx, y, w)
     model._history = history
     model._best_epoch = best_epoch
     return model, best_val
+
+
+def _refit_all(fd, use_attention, n_epochs, off_idx, def_idx, y, w):
+    """Re-train from the same init on every observation for the early-stopped epoch
+    count (KL normalized by the full training weight)."""
+    torch.manual_seed(SEED)
+    dev = _device()
+    model = BookerFormer(len(fd.pids), fd.prior_off, fd.prior_def,
+                         use_attention=use_attention,
+                         tau_off=fd.tau_off, tau_def=fd.tau_def).to(dev)
+    opt = torch.optim.Adam(model.param_groups(), lr=LR)
+    allidx = np.arange(len(fd.y))
+    w_total = float(w.sum())
+    rng = np.random.default_rng(SEED)
+    for _ in range(n_epochs):
+        model.train()
+        perm = rng.permutation(allidx)
+        for i in range(0, len(perm), BATCH):
+            b = torch.from_numpy(perm[i:i + BATCH])
+            ao, ad = model.sample_effects(sample=True)
+            oi, di = off_idx[b].to(dev), def_idx[b].to(dev)
+            off_e = model.emb[oi] if use_attention else None
+            def_e = model.emb[di] if use_attention else None
+            mu, logs2 = model(ao[oi], ad[di], off_e, def_e, mc=True)
+            yt, wt = y[b].to(dev), w[b].to(dev)
+            nll = 0.5 * (logs2 + (yt - mu) ** 2 * torch.exp(-logs2))
+            loss = (wt * nll).sum() / wt.sum().clamp_min(1e-6) \
+                + KL_BETA * model.kl() / w_total
+            opt.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
+            opt.step()
+    model.eval()
+    return model
 
 
 # ---------------------------------------------------------------------------
@@ -665,7 +726,7 @@ def predict_offense_points(model: BookerFormer, fd: FormerData,
             oe = emb[Ot] if model.use_attention else None
             de = emb[Dt] if model.use_attention else None
             mu, logs2 = model(ao[Ot], ad[Dt], oe, de, mc=True)
-            preds[:, t] = mu.cpu().numpy() + LEAGUE
+            preds[:, t] = mu.cpu().numpy() + fd.league_ref
             alea_var[:, t] = torch.exp(logs2).cpu().numpy()
     epi_var = preds.var(axis=1, ddof=1) if mc_samples > 1 else np.zeros(len(O))
     total_sd = np.sqrt(epi_var + alea_var.mean(axis=1))

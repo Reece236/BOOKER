@@ -25,6 +25,7 @@ def load_preseason():
         "simMean": float(r.sim_mean), "simSd": float(r.sim_sd),
         "p10": int(r.p10), "p50": int(r.p50), "p90": int(r.p90),
         "pPlayoff": float(r.p_playoff),
+        "pChamp": (float(r.p_champ) if hasattr(r, "p_champ") and pd.notna(r.p_champ) else None),
         "actualWins": (None if pd.isna(r.actual_wins) else int(r.actual_wins)),
     } for r in df.itertuples()]
 
@@ -81,6 +82,142 @@ def load_recent_games():
         "marketPHome": (None if pd.isna(r.market_p_home) else round(float(r.market_p_home), 3)),
         "homeWin": int(r.home_win),
     } for r in g.itertuples()]
+
+
+def load_games_and_ratings():
+    """FotMob-style match data: every 2026 game (result + model/market pregame
+    probs) + the full 2027 schedule (pregame probs from shrunk preseason nets),
+    plus per-player per-game ratings (forecast/game_ratings.py) mapped to a
+    0-10 scale: r = 6.6 + 1.15*asinh(g/6) -- league-average game 6.6, a +7.6
+    (p90) game ~7.9, Jokic's best 2026 games ~9.7, clipped [2, 10]."""
+    from scipy.stats import norm as _norm
+    from forecast import player_impacts as pi
+    games, gid_ix = [], {}
+    for s in (2025, 2026, 2027):
+        gp = _read(CACHE / f"games_{s}.csv")
+        if gp is None:
+            continue
+        preds = {}
+        pr = _read(CACHE / f"game_predictions_{s}.csv")
+        if pr is not None:
+            for r in pr.itertuples():
+                preds[(str(r.date), r.home, r.away)] = (
+                    round(float(r.model_p_home), 3),
+                    None if pd.isna(r.market_p_home) else round(float(r.market_p_home), 3))
+        nets = {}
+        ps = _read(CACHE / f"preseason_{s}.csv")
+        if ps is not None:
+            nets = dict(zip(ps.team, ps.pred_net))
+        for r in gp.itertuples():
+            done = pd.notna(r.HOME_PTS) and r.HOME_PTS == r.HOME_PTS
+            mp, mk = preds.get((str(r.DATE), r.HOME, r.AWAY), (None, None))
+            if mp is None and r.HOME in nets and r.AWAY in nets and \
+                    getattr(r, "SEASON_TYPE", "Regular Season") == "Regular Season":
+                mp = round(float(_norm.cdf((nets[r.HOME] - nets[r.AWAY]
+                                            + pi.HOME_COURT_ADV) / pi.GAME_MARGIN_SD)), 3)
+            row = {"id": int(r.GAME_ID), "season": int(r.SEASON), "date": str(r.DATE),
+                   "home": r.HOME, "away": r.AWAY,
+                   "type": ("P" if getattr(r, "SEASON_TYPE", "") == "Playoffs" else "R"),
+                   "pHome": mp, "mHome": mk}
+            if done:
+                row["hPts"] = int(r.HOME_PTS); row["aPts"] = int(r.AWAY_PTS)
+            gid_ix[int(r.GAME_ID)] = len(games)
+            games.append(row)
+    pgr = _read(CACHE / "player_game_ratings.csv")
+    player_games = {}
+    if pgr is not None:
+        r10 = (6.6 + 1.15 * np.arcsinh(pgr.g / 6.0)).clip(2.0, 10.0).round(1)
+        for pid, gid, v in zip(pgr.PLAYER_ID, pgr.GAME_ID, r10):
+            gi = gid_ix.get(int(gid))
+            if gi is not None:
+                player_games.setdefault(int(pid), []).append([gi, float(v)])
+        for v in player_games.values():
+            v.sort(key=lambda x: x[0])
+    return games, player_games
+
+
+def load_playoff_split():
+    """Career playoff-vs-regular split per player from the per-game LOO ratings
+    (2018-2026, playoff stints backfilled). {pid: [reg10, po10, poGames, diff100]}.
+    Research note (2026-07-20): the split is DESCRIPTIVE -- across 893
+    player-postseasons no style feature predicts the playoff differential
+    (all FDR q>0.96; Jokic -0.5 on a +12.5 base, Gobert +0.7 = the discourse
+    is backwards), so no rating adjustment is made from it."""
+    p = CACHE / "player_game_ratings.csv"
+    if not p.exists():
+        return {}
+    d = pd.read_csv(p)
+    d["po"] = d.GAME_ID.astype(str).str.startswith("4")
+    d["wg"] = d.g * d.poss
+    out = {}
+    r10 = lambda g: round(float(np.clip(6.6 + 1.15 * np.arcsinh(g / 6.0), 2.0, 10.0)), 2)
+    for pid, g in d.groupby("PLAYER_ID"):
+        po = g[g.po]
+        if len(po) < 10:
+            continue
+        reg = g[~g.po]
+        if not len(reg):
+            continue
+        gr = reg.wg.sum() / reg.poss.sum()
+        gp = po.wg.sum() / po.poss.sum()
+        out[int(pid)] = [r10(gr), r10(gp), int(len(po)), round(float(gp - gr), 2)]
+    return out
+
+
+def load_pred_bracket():
+    """Predicted playoff bracket for the upcoming season: seed each conference
+    by projected wins, advance the per-series favorite. Series probs use the
+    validated machinery: shrunk preseason nets + top-7 rotation blend +
+    SERIES_HCA, integrated over the SERIES_SD matchup shock (Gauss-Hermite)."""
+    from scipy.stats import norm as _norm
+    from forecast import player_impacts as pi
+    from forecast import preseason as ps
+    pre = _read(CACHE / "preseason_all.csv")
+    if pre is None:
+        return None
+    season = int(pre.season.max())
+    d = pre[pre.season == season]
+    if d.actual_wins.notna().any():
+        return None                               # season already played
+    adj = ps.top7_adjust(season) if hasattr(ps, "top7_adjust") else {}
+    nets = {r.team: r.pred_net + ps.PLAYOFF_TOP7_W * adj.get(r.team, 0.0)
+            for r in d.itertuples()}
+    wins = dict(zip(d.team, d.proj_wins))
+    x, w = np.polynomial.hermite_e.hermegauss(21)
+    def p_series(hi, lo):
+        gap = nets[hi] - nets[lo] + ps.SERIES_HCA
+        pg = _norm.cdf((gap + x * ps.SERIES_SD) / pi.GAME_MARGIN_SD)
+        q = 1 - pg
+        ps7 = pg ** 4 * (1 + 4 * q + 10 * q * q + 20 * q ** 3)
+        return float((ps7 * w).sum() / w.sum())
+    rounds = []
+    finalists = []
+    for conf in ("E", "W"):
+        teams = [t for t in nets if pi.CONFERENCE.get(t, "E") == conf]
+        seeds = sorted(teams, key=lambda t: -wins[t])[:8]
+        cur = seeds
+        pair_order = [(0, 7), (3, 4), (2, 5), (1, 6)]
+        rnd_teams = [(cur[i], cur[j]) for i, j in pair_order]
+        for rnd in (1, 2, 3):
+            nxt = []
+            for a, b in rnd_teams:
+                hi, lo = (a, b) if wins[a] >= wins[b] else (b, a)
+                p = p_series(hi, lo)
+                rounds.append({"r": rnd, "conf": conf, "hi": hi, "lo": lo, "p": round(p, 3)})
+                nxt.append(hi if p >= 0.5 else lo)
+            rnd_teams = [(nxt[i], nxt[i + 1]) for i in range(0, len(nxt) - 1, 2)] if len(nxt) > 1 else []
+            if len(nxt) == 1:
+                finalists.append(nxt[0])
+    if len(finalists) == 2:
+        a, b = finalists
+        hi, lo = (a, b) if wins[a] >= wins[b] else (b, a)
+        p = p_series(hi, lo)
+        rounds.append({"r": 4, "conf": "F", "hi": hi, "lo": lo, "p": round(p, 3)})
+        champ = hi if p >= 0.5 else lo
+        pch = d[d.team == champ].p_champ
+        return {"season": season, "rounds": rounds, "champ": champ,
+                "pChamp": (round(float(pch.iloc[0]), 3) if len(pch) else None)}
+    return None
 
 
 def _f(r, k):
@@ -178,12 +315,25 @@ def load_trade():
         abbr = dict(zip(data.TEAMS[season].TEAM_ID, data.TEAMS[season].ABBR))
         team_net = {abbr[t]: round(float(v), 2) for t, v in net_tid.items() if t in abbr}
         team_wins = {t: round(k * v + c, 1) for t, v in team_net.items()}
+        # latest usage-optimum upside per player (BOOKER usage-regression term)
+        role_up = {}
+        rvp = CACHE / "role_value.csv"
+        if rvp.exists():
+            for rr in pd.read_csv(rvp).sort_values("season").itertuples():
+                role_up[int(rr.PLAYER_ID)] = float(rr.role_upside)
         pl = data.PLAYERS[season]
         team_min = {}
         for pid, tid, mn in zip(pl.PLAYER_ID, pl.TEAM_ID, pl.MINUTES):
             ab = abbr.get(tid)
             if ab:
                 team_min[ab] = team_min.get(ab, 0.0) + float(mn)
+        # latest sticky grade per player (for trade skill/timeline breakdown)
+        glat = {}
+        gpath = CACHE / "player_grades.csv"
+        if gpath.exists():
+            gdf = pd.read_csv(gpath).sort_values("season")
+            for r in gdf.itertuples():
+                glat[int(r.PLAYER_ID)] = (r.grade, r.gradeOff, r.gradeDef)
         players = []
         for r in payload["components"]:
             ab = r["team"]
@@ -193,10 +343,12 @@ def load_trade():
             pos = pos_by_nm.get(nm, "SF")
             age = ages.get(nm, 27.0)
             yp = yos.get(nm, 4)
-            # BOOKER score (per-3000-poss rate) from this roster's WAA + presence
-            booker = (r["waa_total"] / pres * (3000.0 / 8200.0)) if pres > 0 else 0.0
+            # BOOKER (predictive +/- per 100, usage regressed toward optimum) -- must
+            # match build_bookerformer_ratings so contract fits stay on one scale.
+            booker = r["impact_total"] + 0.25 * role_up.get(int(r["pid"]), 0.0)
             contract = cv.player_contract_row(
                 r["player"], pos, age, booker, yp, waa_map)
+            g = glat.get(int(r["pid"]))
             players.append({
                 "pid": r["pid"], "player": r["player"], "team": ab,
                 "minutes": int(r["minutes"]),
@@ -205,6 +357,9 @@ def load_trade():
                 "netContrib": round(r["impact_total"] * pres, 2),
                 "waaOff": r["waa_off"], "waaDef": r["waa_def"], "waaTotal": r["waa_total"],
                 "pos": pos, "age": round(age, 1), "yearsPro": yp,
+                "grade": (None if g is None else int(g[0])),
+                "gradeOff": (None if g is None else int(g[1])),
+                "gradeDef": (None if g is None else int(g[2])),
                 **contract,
             })
         pre = _read(CACHE / "preseason_all.csv")
@@ -246,32 +401,40 @@ def _contract_lookups():
 
 MASTER = HERE.parent / "nba_master_dataset_with_archetypes.csv"
 
-# savant/databallr-style skill set: (key, label, source, column, higher_is_better)
-#   source "box"   -> per-32 / efficiency column from the master dataset
-#   source "model" -> a field already on the player row (BookerFormer impact / BOOKER)
+# TRUE-SKILL leaderboard: every skill is a difficulty/opportunity-adjusted, EB-shrunk
+# TALENT estimate -- not a raw tally. Tuple: (key, label, source, col, raw_col, fmt).
+#   source: "model" BookerFormer impact (already adjusted) | "shotq" shot_quality.csv
+#   (multi-year, difficulty-adjusted shooting true-skill) | "pbp" pbp_skills.csv
+#   (EB-shrunk per-36 rates) | "shotd" shot_defense.csv | "box" master dataset.
+#   raw_col -> observed stat shown on hover (None if no comparator).
+#   fmt: "pct" (value is a 0-1 rate, displayed x100) | "num" (1-decimal number).
 SKILL_DEFS = [
-    ("offense", "Offense", "model", "bfOff100", True),
-    ("defense", "Defense", "model", "bfDef100", True),
-    ("scoring", "Scoring", "box", "points/32", True),
-    ("efficiency", "Efficiency", "box", "tsPercent", True),
-    ("playmaking", "Playmaking", "box", "assists/32", True),
-    ("rebounding", "Rebounding", "box", "totalRb/32", True),
-    ("steals", "Steals", "box", "steals/32", True),
-    ("rim_protect", "Rim Protection", "box", "blocks/32", True),
-    ("three_volume", "3PT Volume", "box", "3p_fg_attempted/32", True),
-    ("three_pct", "3PT %", "box", "three_pct", True),
-    ("usage", "Usage", "box", "usagePercent", True),
-    # shot-quality (joins on player-id + season; from cache/shot_quality.csv)
-    ("shot_making", "Shot-Making", "shotq", "pts_oe100", True),   # pts over expected/100 shots
-    ("shot_difficulty", "Shot Difficulty", "shotq", "xfg_inv", True),  # harder diet = higher
-    ("self_creation", "Self-Creation", "shotq", "self_create", True),  # off-the-dribble share
-    # shot-defense (cache/shot_defense.csv): rim-attempt deterrence + make-limiting
-    ("rim_deterrence", "Rim Deterrence", "shotd", "rim_deter", True),
-    ("make_limiting", "Make Limiting", "shotd", "suppression", True),
+    ("offense", "Offense", "model", "bfOff100", None, "num"),
+    ("defense", "Defense", "model", "bfDef100", None, "num"),
+    ("three_pct", "True 3P%", "shotq", "true_3p", "raw_3p", "pct"),
+    ("adj_three", "Adj 3P% (shot diet)", "shotdiff", "d3p_adj", "raw_3p", "pct"),
+    ("rim_finish", "True Rim FG%", "shotq", "true_rim", "raw_rim", "pct"),
+    ("efficiency", "True eFG%", "shotq", "true_efg", "raw_efg", "pct"),
+    ("shot_making", "Shot-Making", "shotq", "shot_making", "pts_oe100", "num"),
+    ("self_creation", "Self-Creation", "shotq", "self_create", None, "pct"),
+    ("off_gravity", "Off-Ball Gravity", "grav", "off_gravity", None, "num"),
+    ("on_gravity", "On-Ball Gravity", "grav", "on_gravity", None, "num"),
+    ("playmaking", "Playmaking", "pbp", "true_ast36", "ast36", "num"),
+    ("creation", "Shot Creation", "pbp", "true_create36", "create36", "num"),
+    ("foul_draw", "Foul Drawing", "pbp", "true_fta36", "fta36", "num"),
+    ("free_throw", "Free-Throw %", "pbp", "true_ft_pct", "ft_pct", "pct"),
+    ("ball_security", "Ball Security", "pbp", "true_tov_pct", "tov_pct", "pct", -1),
+    ("rebounding", "Rebounding", "pbp", "true_reb36", "reb36", "num"),
+    ("steals", "Steals", "pbp", "true_stl36", "stl36", "num"),
+    ("rim_protect", "Rim Protection", "pbp", "true_blk36", "blk36", "num"),
+    ("discipline", "Discipline (low fouls)", "pbp", "true_pf36", "pf36", "num", -1),
+    ("rim_contest", "Rim Contest", "shotd", "rim_contest", None, "num"),
+    ("perimeter_contest", "Perimeter Contest", "shotd", "perim_contest", None, "num"),
+    ("rim_deterrence", "Rim Deterrence", "shotd", "rim_deter", None, "num"),
+    ("make_limiting", "Make Limiting", "shotd", "suppression", None, "num"),
+    ("shot_difficulty", "Shot Difficulty", "shotq", "xfg_inv", None, "num"),
+    ("usage", "Usage", "box", "usagePercent", None, "num"),
 ]
-# stat-leaders categories shown on the Stat Leaders tab (subset of SKILL_DEFS keys)
-LEADER_STATS = ["scoring", "efficiency", "three_pct", "three_volume", "playmaking",
-                "rebounding", "steals", "rim_protect", "usage", "offense", "defense"]
 SKILL_MIN_MINUTES = 500
 
 
@@ -305,7 +468,7 @@ def build_skill_profiles(players):
         att = pd.to_numeric(m.get("total_threeAttempts"), errors="coerce")
         made = pd.to_numeric(m.get("total_threeFg"), errors="coerce")
         m["three_pct"] = np.where(att >= 82, made / att.replace(0, np.nan), np.nan)
-        needed = [c for (_, _, src, c, _) in SKILL_DEFS if src == "box"]
+        needed = [c for (_, _, src, c, *_) in SKILL_DEFS if src == "box"]
         m["_key"] = list(zip(m.playerName.map(pi.norm_name),
                              pd.to_numeric(m.season, errors="coerce").astype("Int64")))
         # one row per (name, season): keep the largest-minutes stint (traded players
@@ -315,28 +478,54 @@ def build_skill_profiles(players):
         if "archetype" in m.columns:
             archetype = m.set_index("_key")["archetype"].to_dict()
 
-    # shot-quality metrics, keyed on (PLAYER_ID, season)
+    # shot-quality TRUE-SKILL metrics (multi-year, difficulty-adjusted), keyed (pid, season)
     shotq = {}
     sqpath = CACHE / "shot_quality.csv"
     if sqpath.exists():
         sq = pd.read_csv(sqpath)
         sq["xfg_inv"] = (1.0 - pd.to_numeric(sq.xfg, errors="coerce")).round(4)
+        sqcols = ["true_3p", "raw_3p", "true_rim", "raw_rim", "true_efg", "raw_efg",
+                  "shot_making", "pts_oe100", "self_create", "xfg_inv"]
         for r in sq.itertuples():
-            shotq[(int(r.PLAYER_ID), int(r.season))] = {
-                "pts_oe100": getattr(r, "pts_oe100", None),
-                "xfg_inv": getattr(r, "xfg_inv", None),
-                "self_create": getattr(r, "self_create", None),
-            }
-    # shot-defense metrics, keyed on (PLAYER_ID, season)
+            shotq[(int(r.PLAYER_ID), int(r.season))] = {c: getattr(r, c, None) for c in sqcols}
+    # PBP per-36 TRUE-SKILL rate metrics (assists/steals/blocks/rebounds/creation)
+    pbp = {}
+    pppath = CACHE / "pbp_skills.csv"
+    if pppath.exists():
+        pp = pd.read_csv(pppath)
+        ppcols = ["true_ast36", "ast36", "true_create36", "create36", "true_reb36", "reb36",
+                  "true_stl36", "stl36", "true_blk36", "blk36", "true_fta36", "fta36",
+                  "true_ft_pct", "ft_pct", "true_tov_pct", "tov_pct", "true_pf36", "pf36"]
+        for r in pp.itertuples():
+            pbp[(int(r.PLAYER_ID), int(r.season))] = {c: getattr(r, c, None) for c in ppcols}
+    # off/on-ball gravity proxies, keyed on (PLAYER_ID, season)
+    grav = {}
+    gvpath = CACHE / "gravity.csv"
+    if gvpath.exists():
+        for r in pd.read_csv(gvpath).itertuples():
+            grav[(int(r.PLAYER_ID), int(r.season))] = {
+                "off_gravity": getattr(r, "off_gravity", None),
+                "on_gravity": getattr(r, "on_gravity", None)}
+    # defender/diet-adjusted shooting (shot_difficulty.csv): actual vs expected FOR THE
+    # SHOT DIET TAKEN (pull-ups/deep/contested), re-anchored to league 3P%. Raw 3P% for
+    # the hover comes from shot_quality at the same key.
+    shotdiff = {}
+    sdfpath = CACHE / "shot_difficulty.csv"
+    if sdfpath.exists():
+        for r in pd.read_csv(sdfpath).itertuples():
+            k = (int(r.PLAYER_ID), int(r.season))
+            v = getattr(r, "d3p_adj", None)
+            if v is not None and v == v:
+                shotdiff[k] = {"d3p_adj": float(v),
+                               "raw_3p": (shotq.get(k) or {}).get("raw_3p")}
+    # shot-defense metrics (incl. zone-split contest), keyed on (PLAYER_ID, season)
     shotd = {}
     sdpath = CACHE / "shot_defense.csv"
     if sdpath.exists():
         sdf = pd.read_csv(sdpath)
+        sdcols = ["rim_deter", "suppression", "rim_contest", "perim_contest"]
         for r in sdf.itertuples():
-            shotd[(int(r.PLAYER_ID), int(r.season))] = {
-                "rim_deter": getattr(r, "rim_deter", None),
-                "suppression": getattr(r, "suppression", None),
-            }
+            shotd[(int(r.PLAYER_ID), int(r.season))] = {c: getattr(r, c, None) for c in sdcols}
 
     def _bkey(p):
         return (pi.norm_name(p["player"]), p["season"])
@@ -349,13 +538,17 @@ def build_skill_profiles(players):
         pool = [p for p in rows if p.get("min", 0) >= SKILL_MIN_MINUTES]
         if len(pool) < 5:
             pool = rows
-        for key, label, source, col, _ in SKILL_DEFS:
-            vals, idx = [], []
+        for key, label, source, col, raw_col, fmt, *rest in SKILL_DEFS:
+            sign = rest[0] if rest else 1   # -1 => lower is better (turnovers, fouls)
+            vals, raws, idx = [], [], []
             for i, p in enumerate(pool):
+                rv = None
                 if source == "model":
                     v = p.get(col)
-                elif source == "shotq":
-                    v = shotq.get((p["pid"], p["season"]), {}).get(col)
+                elif source in ("shotq", "pbp", "grav", "shotdiff"):
+                    src = {"shotq": shotq, "pbp": pbp, "grav": grav, "shotdiff": shotdiff}[source]
+                    d = src.get((p["pid"], p["season"]), {})
+                    v = d.get(col); rv = d.get(raw_col) if raw_col else None
                 elif source == "shotd":
                     v = shotd.get((p["pid"], p["season"]), {}).get(col)
                 else:
@@ -364,17 +557,17 @@ def build_skill_profiles(players):
                 if v is None or (isinstance(v, float) and np.isnan(v)):
                     continue
                 vals.append(float(v)); idx.append(i)
+                raws.append(None if rv is None or (isinstance(rv, float) and np.isnan(rv)) else float(rv))
             if not vals:
                 continue
-            pcts = _percentiles(vals)
+            # percentile ranks goodness (lower-is-better skills ranked on negated value)
+            pcts = _percentiles([sign * v for v in vals])
             for j, i in enumerate(idx):
-                pool[i].setdefault("skills", {})[key] = {
-                    "label": label, "pct": round(float(pcts[j])), "val": round(vals[j], 2),
-                }
-        for p in pool:
-            a = archetype.get(_bkey(p))
-            if a is not None and not (isinstance(a, float) and np.isnan(a)):
-                p["archetype"] = str(a)
+                entry = {"label": label, "pct": round(float(pcts[j])),
+                         "val": round(vals[j], 3), "fmt": fmt}
+                if raws[j] is not None:
+                    entry["raw"] = round(raws[j], 3)
+                pool[i].setdefault("skills", {})[key] = entry
     return players
 
 
@@ -459,6 +652,173 @@ def main():
     data = pi.BookerData(seasons=range(2015, 2028))
     model_map = lb.load_model_waa_map(data)
     proj_2027 = lb.build_2027_projections(data)
+    # sticky, age-curved, team-independent grades + 3-yr projections (cache/player_grades.csv)
+    grades_map = {}
+    gpath = CACHE / "player_grades.csv"
+    if gpath.exists():
+        gcols = ["grade", "gradeLetter", "gradeOff", "gradeDef", "age",
+                 "proj1", "proj1Letter", "proj1Age", "proj2", "proj2Letter", "proj2Age",
+                 "proj3", "proj3Letter", "proj3Age",
+                 "hybOff", "hybDef", "hybBooker", "hybBkOff", "hybBkDef",
+                 "hybWaa", "hybWaaOff", "hybWaaDef"]
+        for r in pd.read_csv(gpath).itertuples():
+            grades_map[(int(r.PLAYER_ID), int(r.season))] = {
+                c: (None if (isinstance(getattr(r, c, None), float) and pd.isna(getattr(r, c)))
+                    else getattr(r, c, None)) for c in gcols}
+    heights = {}
+    hpath = CACHE / "player_heights.csv"
+    if hpath.exists():
+        for r in pd.read_csv(hpath).itertuples():
+            heights[int(r.PLAYER_ID)] = int(r.height_in)
+    # lineup-context stats (descriptive: opp/teammate quality + real on-court +/-)
+    lctx = {}
+    lcpath = CACHE / "lineup_context.csv"
+    if lcpath.exists():
+        lcc = ["opp_quality", "tm_quality", "real_pm"]
+        for r in pd.read_csv(lcpath).itertuples():
+            lctx[(int(r.PLAYER_ID), int(r.season))] = {c: getattr(r, c, None) for c in lcc}
+    # role/usage value: what a player is worth if used at his optimal usage (skill curve)
+    role_map = {}
+    rvpath = CACHE / "role_value.csv"
+    if rvpath.exists():
+        for r in pd.read_csv(rvpath).itertuples():
+            role_map[(int(r.PLAYER_ID), int(r.season))] = {
+                "usage": float(r.usage), "optUsage": float(r.opt_usage),
+                "misuse": float(r.misuse), "tsNow": float(r.ts_now),
+                "tsOpt": float(r.ts_opt), "upside": float(r.role_upside)}
+    # crunch-time record (career-pooled 2018-2025 from pbp): clutch = last 5 min of a
+    # <=5-pt game. Volume (true-shot attempts) + TS in/out of clutch. Descriptive --
+    # clutch TS deltas mostly measure the BURDEN a primary option absorbs, so they are
+    # surfaced, not priced into BOOKER (lineup-level test: creation preserves clutch
+    # offense ~+1.5 ORtg/SD, t=2.0, but macro playoff test = null).
+    clutch_map = {}
+    clpath = CACHE / "clutch_players.csv"
+    if clpath.exists():
+        for r in pd.read_csv(clpath, index_col=0).itertuples():
+            if r.tsa_c >= 100:
+                clutch_map[int(r.Index)] = {
+                    "tsaC": int(r.tsa_c), "tsN": round(float(r.ts_n), 3),
+                    "tsC": round(float(r.ts_c), 3)}
+    # BOOKER-PROJ: next-season player forecast (walk-forward; DARKO-parity overall,
+    # best-in-class on team-changers). PLAYER-level only -- the team engine gate
+    # rejected it (shrinkage flattens team spread), so trade/lineup sums keep impacts.
+    proj_map = {}
+    pjpath = CACHE / "booker_proj.csv"
+    if pjpath.exists():
+        for r in pd.read_csv(pjpath).itertuples():
+            # attach to the season the forecast was MADE FROM (proj_for_season - 1)
+            proj_map[(int(r.PLAYER_ID), int(r.proj_for_season) - 1)] = float(r.proj_impact)
+    # projected next-season minutes (gated ridge + injury blend + overrides; built
+    # by data_ingest/rebuild_rosters_2027.py). Lineup Lab seeds player workloads
+    # from this instead of a flat 1500.
+    projmin_map = {}
+    pmp = CACHE / "players_2027.csv"
+    if pmp.exists():
+        for r in pd.read_csv(pmp).itertuples():
+            projmin_map[int(r.PLAYER_ID)] = float(r.MINUTES)
+    # ---- play-finisher (lob-center) calibration -------------------------------
+    # OOS-validated bias: rim-running play finishers (top-quartile rim rate, no 3s,
+    # no self-creation -- Gafford/Capela/Duren types) are systematically OVERRATED
+    # by the lineup model: forward residual vs next-season pure RAPM -0.31
+    # (t=-2.2, p=.03), offense-specific, and DARKO shows no such bias. Correction
+    # fit by walk-forward joint regression arb_{t+1} ~ impact_t + lobScore_t:
+    # gamma = -0.23 pts/100 per lobScore unit zeroes the archetype residual OOS
+    # (-0.11, p=.35) without hurting overall forward Spearman (.3067 -> .3057).
+    # Applied to every offense-bearing impact display (model per-100, hybrid
+    # scores, WAA); booker_proj.csv carries its own walk-forward version.
+    # (Related null: substitute/backup quality does NOT bias impacts -- resid vs
+    # sub-quality corr -0.03, p=.21 -- so no on/off-style correction is needed.)
+    LOB_GAMMA = -0.23
+    lob_corr = {}
+    kpm = 0.00012      # wins-per-(pt/100)-per-minute fallback, refined below
+    sqp = CACHE / "shot_quality.csv"
+    bfp = HERE / "booker_bookerformer_ratings.csv"
+    min_map = {}
+    if sqp.exists() and bfp.exists():
+        bf = pd.read_csv(bfp)
+        min_map = {(int(p), int(s)): float(m)
+                   for p, s, m in zip(bf.PLAYER_ID, bf.season, bf.minutes)}
+        stable = bf[(bf.impact_total.abs() > 1.0) & (bf.minutes > 500)]
+        kpm = float((stable.waa_total / (stable.impact_total * stable.minutes)).median())
+        sq = pd.read_csv(sqp)
+        sq["minutes"] = [min_map.get((int(p), int(s)), 0.0)
+                         for p, s in zip(sq.PLAYER_ID, sq.season)]
+        for s, g in sq.groupby("season"):
+            pool = g[g.minutes >= 750]
+            if len(pool) < 100:
+                continue
+            def _z(c):
+                mu, sd = pool[c].mean(), pool[c].std()
+                return (((g[c] - mu) / sd) if sd else g[c] * 0.0).clip(-2.5, 2.5)
+            score = (_z("rim_rate") - _z("three_rate") - _z("self_create")).clip(lower=0)
+            for pid, v in zip(g.PLAYER_ID, score):
+                if pd.notna(v) and v > 0.05:
+                    lob_corr[(int(pid), int(s))] = LOB_GAMMA * float(v)
+
+    PER100_FIELDS = ("bookerScore", "bookerOff", "waaOff100", "waaModel100",
+                     "waaBayesianOff100", "waaBayesian100",
+                     "hybBooker", "hybBkOff", "hybOff", "hybWaaOff100")
+    WINS_FIELDS = ("waaOff", "waaModel", "hybWaa", "hybWaaOff")
+
+    def _apply_lob(key, obj):
+        d = lob_corr.get(key)
+        if not d or not obj:
+            return
+        dw = d * kpm * min_map.get(key, 1200.0)   # wins-unit equivalent
+        for f in PER100_FIELDS:
+            if obj.get(f) is not None:
+                obj[f] = round(obj[f] + d, 2)
+        for f in WINS_FIELDS:
+            if obj.get(f) is not None:
+                obj[f] = round(obj[f] + dw, 2)
+
+    for key in set(model_map) | set(grades_map):
+        _apply_lob(key, model_map.get(key))
+        _apply_lob(key, grades_map.get(key))
+    if lob_corr:
+        n_hit = sum(1 for k in lob_corr if k in model_map or k in grades_map)
+        print(f"play-finisher calibration: {n_hit} player-seasons adjusted "
+              f"(gamma {LOB_GAMMA}/lob unit, wins conv {kpm:.6f}/min)")
+    # per-game on-court net rating (raw observable behind the ratings; Trajectory
+    # scatter). Compact int arrays in game order, clipped +-60 at build time.
+    gamenet_map = {}
+    gnpath = CACHE / "player_game_net.csv"
+    if gnpath.exists():
+        for r in pd.read_csv(gnpath).itertuples():
+            gamenet_map[(int(r.PLAYER_ID), int(r.season))] = \
+                [int(x) for x in str(r.game_nets).split("|")]
+    # player DNA: continuous style fingerprint (PCA-space) + profile rarity + comparables.
+    # dna_seasons[pid] is a sorted list of (season, payload) so we can carry the most
+    # recent DNA forward to a season the caches don't cover yet (e.g. 2026).
+    dna_seasons = {}
+    dpath = CACHE / "player_dna.csv"
+    if dpath.exists():
+        for r in pd.read_csv(dpath).itertuples():
+            comps = []
+            for tok in str(r.comparables).split("|"):
+                parts = tok.split(":")
+                if len(parts) >= 4:
+                    comps.append({"pid": int(parts[0]), "player": ":".join(parts[1:-2]),
+                                  "season": int(parts[-2]), "sim": float(parts[-1])})
+            axes = []
+            for tok in str(r.style_fp).split("|"):
+                if ":" in tok:
+                    a, p = tok.rsplit(":", 1)
+                    axes.append({"axis": a, "pct": int(p)})
+            dna_seasons.setdefault(int(r.PLAYER_ID), []).append((int(r.season), {
+                "styleAxes": axes, "scarcityPct": int(r.scarcity_pct), "comparables": comps}))
+        for pid in dna_seasons:
+            dna_seasons[pid].sort()
+
+    def _dna_for(pid, season):
+        lst = dna_seasons.get(pid)
+        if not lst:
+            return None
+        best = None
+        for s, d in lst:
+            if s <= season:
+                best = d
+        return best if best is not None else lst[0][1]
     pos_by_nm, age_map, latest_age, yos = _contract_lookups()
     waa_ss = cv.build_waa_by_season()
     if not cv.MODEL_CACHE.exists():
@@ -478,6 +838,10 @@ def main():
             "waa": round(float(r.waa_wins), 2),
             "waaLegacy": round(float(r.waa_wins), 2),
         }
+        # card minutes from the corrected stint feed (BookerFormer ratings file); the
+        # legacy base table carries pre-audit stint minutes (~10% low, 2026 partial)
+        if key in min_map:
+            row["min"] = round(min_map[key])
         extra = model_map.get(key)
         if extra:
             row.update({
@@ -518,6 +882,45 @@ def main():
         proj = proj_2027.get(int(r.pid))
         if proj:
             row.update(proj)
+        if int(r.pid) in heights:
+            row["heightIn"] = heights[int(r.pid)]
+        lc = lctx.get(key)
+        if lc:
+            row.update({k: lc[k] for k in ("opp_quality", "tm_quality", "real_pm")})
+        rv = role_map.get(key)
+        if rv:
+            row["role"] = rv
+        cl = clutch_map.get(int(r.pid))
+        if cl:
+            row["clutch"] = cl
+        gn = gamenet_map.get(key)
+        if gn:
+            row["gameNets"] = gn
+        pjv = proj_map.get(key)
+        if pjv is not None:
+            row["projNext"] = round(pjv, 2)
+        if int(r.pid) in projmin_map:
+            row["projMin"] = round(projmin_map[int(r.pid)])
+        dn = _dna_for(int(r.pid), int(r.season))
+        if dn:
+            row["styleAxes"] = dn["styleAxes"]
+            row["scarcityPct"] = dn["scarcityPct"]
+            if dn["comparables"]:
+                row["comparables"] = dn["comparables"]
+        gr = grades_map.get(key)
+        if gr:
+            row["grade"] = gr["grade"]; row["gradeLetter"] = gr["gradeLetter"]
+            row["gradeOff"] = gr["gradeOff"]; row["gradeDef"] = gr["gradeDef"]
+            if gr.get("proj1") is not None:
+                row["gradeProj"] = [{"age": gr[f"proj{t}Age"], "grade": gr[f"proj{t}"],
+                                     "letter": gr[f"proj{t}Letter"]} for t in (1, 2, 3)]
+            # make offense/defense/WAA/BOOKER HYBRID (50% skills + 50% impact)
+            if gr.get("hybBooker") is not None:
+                row["bookerScore"] = gr["hybBooker"]; row["bookerOff"] = gr["hybBkOff"]
+                row["bookerDef"] = gr["hybBkDef"]
+                row["bfOff100"] = gr["hybOff"]; row["bfDef100"] = gr["hybDef"]
+                row["waaOff"] = gr["hybWaaOff"]; row["waaDef"] = gr["hybWaaDef"]
+                row["waaModel"] = gr["hybWaa"]; row["waa"] = gr["hybWaa"]
         nm = cv.norm_name(r.player)
         # True Value = skill-based fair AAV (BOOKER score, age penalty removed).
         # Pre-2018 rows have no BOOKER score -> derive one from waaModel & minutes
@@ -529,39 +932,76 @@ def main():
         lb.attach_contract_fields(row, pos_by_nm, {nm: age}, yos, bscore)
         players.append(row)
 
-    # ---- predictive 2026-27 rows (projection season: no box stats, forecasts only)
-    PROJ = 2027
-    if PROJ in data.PLAYERS and proj_2027:
-        abbr = dict(zip(data.TEAMS[PROJ].TEAM_ID, data.TEAMS[PROJ].ABBR)) \
-            if PROJ in data.TEAMS else {}
-        for prow in data.PLAYERS[PROJ].itertuples():
-            pid = int(prow.PLAYER_ID)
-            pj = proj_2027.get(pid)
-            mins = float(prow.MINUTES)
-            if pj is None or mins < 250:
-                continue
-            waa = pj["waaProj2027"]
-            row = {
-                "pid": pid, "season": PROJ, "player": prow.NAME,
-                "team": abbr.get(prow.TEAM_ID, "?"), "min": round(mins),
-                "waa": waa, "waaModel": waa,
-                "waaOff": pj["waaOffProj2027"], "waaDef": pj["waaDefProj2027"],
-                "bookerScore": round(waa * 1440.0 / mins, 2) if mins > 0 else None,
-                "bookerOff": round(pj["waaOffProj2027"] * 1440.0 / mins, 2) if mins > 0 else None,
-                "bookerDef": round(pj["waaDefProj2027"] * 1440.0 / mins, 2) if mins > 0 else None,
-                "grade2027": pj["grade2027"], "projRank2027": pj["projRank2027"],
-                "modelType": "projection", "predictive": True,
-            }
-            nm = cv.norm_name(prow.NAME)
-            age = age_map.get((nm, PROJ), latest_age.get(nm, 27.0))
-            lb.attach_contract_fields(row, pos_by_nm, {nm: age}, yos, row["bookerScore"])
-            players.append(row)
+    # ---- predictive future-season rows: 2027 / 2028 / 2029 (3 years out).
+    # Each player's 3-year GRADE projection (aged along the curve) plus their 2026 hybrid
+    # BOOKER/WAA aged forward in value units. Static roster (the 2027 cloned roster).
+    AGE_Q = -0.06   # BOOKER-unit aging per (age-27)^2 (peak 27)
+
+    def _age_val(v, a0, a1):
+        if v is None or a0 is None:
+            return v
+        return round(v + AGE_Q * ((a1 - 27) ** 2 - (a0 - 27) ** 2), 2)
+
+    fwd = data.PLAYERS.get(2027)
+    if fwd is not None:
+        abbr = dict(zip(data.TEAMS[2027].TEAM_ID, data.TEAMS[2027].ABBR)) if 2027 in data.TEAMS else {}
+        for PROJ in (2027, 2028, 2029):
+            t = PROJ - 2026
+            for prow in fwd.itertuples():
+                pid = int(prow.PLAYER_ID)
+                mins = float(prow.MINUTES)
+                g26 = grades_map.get((pid, 2026))
+                if mins < 250 or not g26 or g26.get("hybBooker") is None or g26.get(f"proj{t}") is None:
+                    continue
+                a0 = g26.get("age")
+                a1 = (a0 + t) if a0 is not None else None
+                row = {
+                    "pid": pid, "season": PROJ, "player": prow.NAME,
+                    "team": abbr.get(prow.TEAM_ID, "?"), "min": round(mins),
+                    "grade": g26[f"proj{t}"], "gradeLetter": g26[f"proj{t}Letter"],
+                    "age": g26[f"proj{t}Age"],
+                    "bookerScore": _age_val(g26["hybBooker"], a0, a1),
+                    "bookerOff": _age_val(g26["hybBkOff"], a0, a1),
+                    "bookerDef": _age_val(g26["hybBkDef"], a0, a1),
+                    "bfOff100": _age_val(g26["hybOff"], a0, a1),
+                    "bfDef100": _age_val(g26["hybDef"], a0, a1),
+                    "waaOff": _age_val(g26["hybWaaOff"], a0, a1),
+                    "waaDef": _age_val(g26["hybWaaDef"], a0, a1),
+                    "waa": _age_val(g26["hybWaa"], a0, a1),
+                    "waaModel": _age_val(g26["hybWaa"], a0, a1),
+                    "modelType": "projection", "predictive": True,
+                }
+                # Year-1 rows are BOOKER-PROJ driven (the validated forward model:
+                # DARKO-parity overall, best-in-class on team-changers) rather than
+                # the aging-curve nowcast. Scale-align PROJ (model per-100) to the
+                # hybrid via the player's own hybrid-vs-model gap -- the exact
+                # quantity the trajectory's year-1 point plots -- and re-derive WAA
+                # from projected minutes so the board's rank blend follows.
+                pjv = proj_map.get((pid, 2026)) if PROJ == 2027 else None
+                if pjv is not None:
+                    m26 = model_map.get((pid, 2026)) or {}
+                    anchor = m26.get("waaBayesian100")
+                    delta = ((g26["hybBooker"] - anchor)
+                             if anchor is not None else 0.0)
+                    pb = round(pjv + delta, 2)
+                    dv = pb - row["bookerScore"]
+                    row["bookerScore"] = pb
+                    for f in ("bookerOff", "bookerDef"):
+                        if row.get(f) is not None:
+                            row[f] = round(row[f] + dv / 2.0, 2)
+                    row["waa"] = row["waaModel"] = round(kpm * mins * pb, 2)
+                    row["projSource"] = "booker-proj"
+                nm = cv.norm_name(prow.NAME)
+                lb.attach_contract_fields(row, pos_by_nm, {nm: (a1 or 27.0)}, yos, row["bookerScore"])
+                players.append(row)
 
     by_season = {}
     for row in players:
         by_season.setdefault(row["season"], []).append(row)
     for season, rows in by_season.items():
-        rows.sort(key=lambda x: x.get("waaModel", x["waa"]), reverse=True)
+        # rank by BOOKER (predictive skill rate); fall back to WAA where BOOKER missing
+        rows.sort(key=lambda x: (x.get("bookerScore") if x.get("bookerScore") is not None
+                                 else x.get("waaModel", x.get("waa", -99)) - 999), reverse=True)
         for i, row in enumerate(rows, 1):
             row["rankModel"] = i
 
@@ -591,6 +1031,9 @@ def main():
     game_metrics = load_game_metrics()
     calibration = load_calibration()
     recent_games = load_recent_games()
+    games, player_games = load_games_and_ratings()
+    playoff_split = load_playoff_split()
+    pred_bracket = load_pred_bracket()
     forecast_seasons = sorted({p["season"] for p in preseason})
     seasons = sorted({p["season"] for p in players} | set(forecast_seasons))
     trade = load_trade()
@@ -606,6 +1049,10 @@ def main():
         "gameMetrics": game_metrics,
         "calibration": calibration,
         "recentGames": recent_games,
+        "games": games,
+        "playerGames": player_games,
+        "playoffSplit": playoff_split,
+        "predBracket": pred_bracket,
         "forecastSeasons": forecast_seasons,
         "trade": trade,
         "diagnostics": diagnostics,

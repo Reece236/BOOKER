@@ -174,16 +174,22 @@ class EnhancedImpacts:
 
 
 def _load_box_table():
-    bk = pd.read_csv(PLAYER_DATA).dropna(subset=["box"])
+    bk = pi.load_box(PLAYER_DATA).dropna(subset=["box"])
     bk["nm"] = bk.playerName.map(norm_name)
     return bk
 
 
-def box_off_def_shares(data, target_season, pids):
-    """Bayesian offensive share of total impact per player id."""
+def box_off_def_shares(data, target_season, pids, include_target=False):
+    """Bayesian offensive share of total impact per player id.
+
+    Uses the latest box season STRICTLY BEFORE target_season (audit fix 2026-07: the
+    old `<=` read the target season's own OWS/DWS/AST/STL/BLK when target_season was
+    a completed historical season -- a leak into every O/D prior used for a
+    prior-only forecast/backtest). Live forward seasons are unaffected."""
     bk = _load_box_table()
-    # latest season at or before target for each name
-    sub = bk[bk.season <= target_season]
+    # latest season strictly before target for each name (prior-only); descriptive
+    # same-season callers (player_waa_components) pass include_target=True
+    sub = bk[(bk.season <= target_season) if include_target else (bk.season < target_season)]
     latest = (sub.sort_values("season")
               .groupby("nm", as_index=False)
               .tail(1)
@@ -196,7 +202,7 @@ def box_off_def_shares(data, target_season, pids):
         if pl is None:
             continue
         for pid, nm in zip(pl.PLAYER_ID, pl.NAME):
-            pid_nm[int(pid)] = norm_name(nm)
+            pid_nm[int(pid)] = norm_name(nm)   # name lookup only (no outcome data)
 
     shares = {}
     for pid in pids:
@@ -222,9 +228,9 @@ def box_off_def_shares(data, target_season, pids):
 
 
 def role_indices(data, target_season, pids):
-    """Creator / finisher / defender indices in [0, 1] from box rates."""
+    """Creator / finisher / defender indices in [0, 1] from box rates (prior seasons only)."""
     bk = _load_box_table()
-    sub = bk[bk.season <= target_season]
+    sub = bk[bk.season < target_season]
     latest = (sub.sort_values("season")
               .groupby("nm", as_index=False)
               .tail(1)
@@ -432,8 +438,14 @@ def _renormalize_off_def(total, off, def_):
 
 
 def build_enhanced(data, train_seasons, target_season, alpha=None,
-                   extra_stints=None, extra_weight=1.0):
-    """Net RAPM (validated) -> team reconcile -> O/D split + credit sharing."""
+                   extra_stints=None, extra_weight=1.0, reconcile=True):
+    """Net RAPM (validated) -> team reconcile -> O/D split + credit sharing.
+
+    reconcile=True shrinks impacts toward the TARGET season's ACTUAL team nets --
+    fine for retrodictive/current-season valuation, but TARGET LEAKAGE when used as
+    a preseason forecast of a completed historical season (it peeks at that season's
+    results). Preseason/backtest callers must pass reconcile=False; a true future
+    season has no actuals, so live forward forecasts are unaffected either way."""
     alpha = alpha or pi.pick_alpha(data, train_seasons)
     total, prior, last_age = pi.build_impacts(
         data, train_seasons, target_season, alpha,
@@ -441,7 +453,7 @@ def build_enhanced(data, train_seasons, target_season, alpha=None,
     pids = list(total.keys())
 
     minutes = {}
-    for s in train_seasons + ([target_season] if target_season in data.PLAYERS else []):
+    for s in train_seasons:            # prior-only (target-season minutes = leak)
         pl = data.PLAYERS.get(s)
         if pl is None:
             continue
@@ -451,7 +463,7 @@ def build_enhanced(data, train_seasons, target_season, alpha=None,
     shares = box_off_def_shares(data, target_season, pids)
     off, def_ = split_off_def(total, shares, minutes)
 
-    if target_season in data.PLAYERS:
+    if reconcile and target_season in data.PLAYERS:
         for _ in range(RECONCILE_PASSES):
             total, off, def_ = reconcile_team_nets(
                 data, target_season, total, off, def_,
@@ -507,7 +519,7 @@ def player_waa_components(data, season, k_wins, enh, minutes=None):
         tmin[tid] = tmin.get(tid, 0.0) + mins.get(pid, 0.0)
 
     pids = [int(pid) for pid in pl.PLAYER_ID]
-    shares = box_off_def_shares(data, season, pids)
+    shares = box_off_def_shares(data, season, pids, include_target=True)
 
     rows = []
     for pid, nm, tid, mn in zip(pl.PLAYER_ID, pl.NAME, pl.TEAM_ID, pl.MINUTES):

@@ -65,6 +65,17 @@ def norm_name(s):
     return s.strip()
 
 
+def load_box(path=None):
+    """Season box/advanced table with ONE row per (player, season): for traded players
+    basketball-reference carries a season-total row (team "2TM"/"3TM"...) plus one row per
+    team stint -- keep the total. (The pre-2026-10 file was a cartesian join for traded
+    players -- 9 rows for a 3-row player -- rebuilt by data_ingest/fetch_bbref_season.py.)"""
+    bk = pd.read_csv(path or PLAYER_DATA)
+    tot = bk.team.astype(str).str.fullmatch(r"\d+TM")
+    multi = bk.groupby(["playerId", "season"]).team.transform("size") > 1
+    return bk[~multi | tot].copy()
+
+
 def parse_lineup(s):
     return [int(x) for x in str(s).split(",") if x.strip()]
 
@@ -96,7 +107,7 @@ class BookerData:
             if s not in self.seasons:
                 self.seasons.append(s)
 
-        bk = pd.read_csv(PLAYER_DATA)
+        bk = load_box()
         bk["nm"] = bk.playerName.map(norm_name)
         bk = bk.dropna(subset=["box"])
         self.BOX = {(nm, ss): np.average(g.box, weights=g.minutesPlayed.clip(lower=1))
@@ -385,11 +396,21 @@ def prior_train_seasons(data, target_season, n_prior=N_PRIOR, min_season=2015):
 
 
 def pick_alpha(data, train_seasons):
-    """Choose ridge alpha by predicting the most-recent training season's net."""
+    """Choose ridge alpha by predicting the most-recent training season's net from
+    the EARLIER training seasons only (a true one-season-ahead holdout).
+
+    Audit fix (2026-07): the old version trained on `train_seasons` -- which
+    INCLUDES the validation season -- and scored in-sample R^2 (0.91-0.97), so the
+    "selection" just rewarded the least regularization (alpha=2000, the grid floor,
+    in 8 of 10 seasons). The held-out version selects on forecast skill, which is
+    what every caller uses the ridge for."""
     val_season = max(train_seasons)
+    fit_seasons = [s for s in train_seasons if s != val_season]
+    if not fit_seasons:
+        return DEFAULT_ALPHA
     best = None
     for alpha in ALPHA_GRID:
-        impact, _, _ = build_impacts(data, train_seasons, val_season, alpha)
+        impact, _, _ = build_impacts(data, fit_seasons, val_season, alpha)
         pred = aggregate_net(data, impact, val_season)
         act = dict(zip(data.TEAMS[val_season].TEAM_ID, data.TEAMS[val_season].ACTUAL_NET))
         ids = [t for t in pred if t in act]

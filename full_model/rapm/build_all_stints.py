@@ -125,7 +125,7 @@ def process_season(season):
     })
 
     stints[["GAME_ID", "PERIOD", "HOME_LINEUP", "AWAY_LINEUP", "POSS", "Y",
-            "DURATION_SECONDS", "PLUS_MINUS"]].to_csv(
+            "DURATION_SECONDS", "PLUS_MINUS", "HOME_PTS", "AWAY_PTS"]].to_csv(
         CACHE / f"stints_{season}.csv", index=False)
     players.to_csv(CACHE / f"players_{season}.csv", index=False)
     teams.to_csv(CACHE / f"teams_{season}.csv", index=False)

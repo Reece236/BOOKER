@@ -70,7 +70,7 @@ def team_scores(data, impact, target, train):
     return net_rmse, wins_rmse, wins_mae, wins_r2
 
 
-def ridge_stint_pred(off, def_, home_lineups, away_lineups):
+def ridge_stint_pred(off, def_, home_lineups, away_lineups, league=LEAGUE):
     """Ridge O/D prediction of offense points/100 for matchups (O scores vs D)."""
     preds, keep = [], []
     for ol, dl in zip(home_lineups, away_lineups):
@@ -79,7 +79,7 @@ def ridge_stint_pred(off, def_, home_lineups, away_lineups):
         if len(oids) != 5 or len(dids) != 5:
             keep.append(False); continue
         keep.append(True)
-        p = LEAGUE + sum(off.get(o, 0.0) for o in oids) - sum(def_.get(d, 0.0) for d in dids)
+        p = league + sum(off.get(o, 0.0) for o in oids) - sum(def_.get(d, 0.0) for d in dids)
         preds.append(p)
     return np.array(preds), np.array(keep, dtype=bool)
 
@@ -101,7 +101,9 @@ def eval_season(data, target, quick=False):
     # ---- ridge O/D baseline -------------------------------------------------
     total, off, def_, _, _ = pi.build_impacts_off_def(data, train, target)
     nr, wr, wm, r2 = team_scores(data, total, target, train)
-    p_off, keep = ridge_stint_pred(off, def_, home, away)
+    # same level convention as BookerFormer: latest training season's league offense
+    p_off, keep = ridge_stint_pred(off, def_, home, away,
+                                   league=bf._season_league(data.STINTS[max(train)]))
     rmse_off = _wmetrics(p_off, yoff[keep], poss[keep])
     rows["ridge"] = dict(net_rmse=nr, wins_rmse=wr, wins_mae=wm, wins_r2=r2,
                          stint_rmse=rmse_off, cov90=np.nan, sd_min_corr=np.nan,

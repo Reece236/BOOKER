@@ -5,7 +5,27 @@ Reproduces the Dianjeol pipeline (quarter active players -> substitution pattern
 -> quarter starters -> stints -> lineup walk) WITHOUT any live NBA API calls, so it
 runs on any season's nbastats_{season}.csv. Output schema matches Dianjeol's
 lineup_stints.csv:  GAME_ID, PERIOD, HOME_LINEUP, AWAY_LINEUP, DURATION_SECONDS,
-PLUS_MINUS.
+PLUS_MINUS -- plus HOME_PTS / AWAY_PTS (real per-side points from the running
+score) whenever the pbp carries it (classic `SCORE` = "AWAY - HOME", or
+HOME_SCORE / AWAY_SCORE from data_ingest/pbpv3.convert).
+
+Stint scoring convention (audit fix 2026-07): a stint's points are
+    score after its LAST event  -  score after the PREVIOUS stint's last event,
+with the running score forward-filled across the whole GAME (not per period).
+The old version took `first(MARGIN)` of the stint as the start value -- i.e. the
+margin AFTER the stint's first event -- and back-filled across period starts, so
+any score on the first play after a substitution (typically the free throw after
+a foul + sub) and the first score of every period was credited to NO lineup.
+Stint PM then reproduced the final margin in only ~5% of games (MAE ~5 pts/game);
+the fixed builder reconciles every game exactly (all stints, incl. non-5v5).
+Duration uses the same convention: a stint runs from the clock of the PREVIOUS
+stint's last event (the substitution that opened it; period start for the first
+stint) to the clock of its own last event. The old START_SEC was the clock of the
+stint's first logged event, so the dead-ball gap between every sub and the next
+event was lost: ~9% of game time vanished (2625 of 2880 s/game), stint POSS were
+under-counted, per-100 Y inflated (league offense read ~120 instead of ~114), and
+stint-derived player minutes ran ~10% low.
+Zero-duration stints are still dropped (no possessions to attribute).
 
 Usage:
     from build_season_stints import build_lineup_stints
@@ -97,13 +117,33 @@ def build_lineup_stints(df):
         d[r].add(pid)
 
     # ---- stints: boundaries at subs and period change -------------------------
-    s = df[["GAME_ID", "PERIOD", "PCTIMESTRING", "EVENTMSGTYPE",
-            "SCOREMARGIN", "EVENTNUM"]].copy()
+    keep = ["GAME_ID", "PERIOD", "PCTIMESTRING", "EVENTMSGTYPE", "SCOREMARGIN", "EVENTNUM"]
+    keep += [c for c in ("SCORE", "HOME_SCORE", "AWAY_SCORE") if c in df.columns]
+    s = df[keep].copy()
     s["SEC"] = s.PCTIMESTRING.map(_sec)
-    s["MARGIN"] = pd.to_numeric(s.SCOREMARGIN.replace("TIE", 0), errors="coerce")
-    s = s.sort_values(["GAME_ID", "PERIOD", "EVENTNUM"])
-    s["MARGIN"] = s.groupby(["GAME_ID", "PERIOD"]).MARGIN.ffill().bfill()
-    s["MARGIN"] = s.MARGIN.fillna(0)
+    s = s.sort_values(["GAME_ID", "PERIOD", "EVENTNUM"]).reset_index(drop=True)
+    has_pts = True
+    if "HOME_SCORE" in s.columns and "AWAY_SCORE" in s.columns:
+        s["H_SC"] = pd.to_numeric(s.HOME_SCORE, errors="coerce")
+        s["A_SC"] = pd.to_numeric(s.AWAY_SCORE, errors="coerce")
+    elif "SCORE" in s.columns:
+        sc = s.SCORE.astype(str).str.extract(r"(\d+)\s*-\s*(\d+)").astype(float)
+        s["A_SC"], s["H_SC"] = sc[0], sc[1]            # classic SCORE is "AWAY - HOME"
+    else:
+        has_pts = False
+    if has_pts:
+        # running score is cumulative over the game: ffill across periods, 0 at tip
+        for c in ("H_SC", "A_SC"):
+            s[c] = s.groupby("GAME_ID")[c].ffill().fillna(0.0)
+        s["MARGIN"] = s.H_SC - s.A_SC
+    else:
+        s["MARGIN"] = pd.to_numeric(s.SCOREMARGIN.replace("TIE", 0), errors="coerce")
+        s["MARGIN"] = s.groupby("GAME_ID").MARGIN.ffill().fillna(0.0)
+        s["H_SC"] = np.nan; s["A_SC"] = np.nan
+    # value BEFORE each event = value after the previous event of the same game
+    s["MARGIN_PREV"] = s.groupby("GAME_ID").MARGIN.shift(1).fillna(0.0)
+    s["H_PREV"] = s.groupby("GAME_ID").H_SC.shift(1).fillna(0.0)
+    s["A_PREV"] = s.groupby("GAME_ID").A_SC.shift(1).fillna(0.0)
     s["IS_SUB"] = s.EVENTMSGTYPE == SUB
     s["STINT_ENDS"] = s.IS_SUB.shift(1, fill_value=False)
     s["PERIOD_CHANGE"] = (s.PERIOD != s.PERIOD.shift(1)) | (s.GAME_ID != s.GAME_ID.shift(1))
@@ -113,13 +153,23 @@ def build_lineup_stints(df):
     st = s.groupby("STINT_ID").agg(
         GAME_ID=("GAME_ID", "first"),
         PERIOD=("PERIOD", "first"),
-        START_SEC=("SEC", "first"),
+        FIRST_EV_SEC=("SEC", "first"),
         END_SEC=("SEC", "last"),
-        START_MARGIN=("MARGIN", "first"),
+        START_MARGIN=("MARGIN_PREV", "first"),
         END_MARGIN=("MARGIN", "last"),
+        H0=("H_PREV", "first"), H1=("H_SC", "last"),
+        A0=("A_PREV", "first"), A1=("A_SC", "last"),
     ).reset_index()
+    # stint starts when the previous stint (same game+period) ended; the first stint
+    # of a period starts at the period's opening clock (12:00 regulation, 5:00 OT)
+    prev_end = st.groupby(["GAME_ID", "PERIOD"]).END_SEC.shift(1)
+    period_len = np.where(st.PERIOD <= 4, 720.0, 300.0)
+    st["START_SEC"] = prev_end.fillna(pd.Series(period_len, index=st.index))
+    st["START_SEC"] = np.maximum(st.START_SEC, st.FIRST_EV_SEC.fillna(st.START_SEC))
     st["DURATION_SECONDS"] = st.START_SEC - st.END_SEC
     st["PLUS_MINUS"] = st.END_MARGIN - st.START_MARGIN
+    st["HOME_PTS"] = (st.H1 - st.H0) if has_pts else np.nan
+    st["AWAY_PTS"] = (st.A1 - st.A0) if has_pts else np.nan
     st = st[st.DURATION_SECONDS > 0].copy()
 
     # ---- lineup walk per (game, period) ---------------------------------------
@@ -139,6 +189,7 @@ def build_lineup_stints(df):
                 "AWAY_LINEUP": ", ".join(map(str, sorted(away_lu))),
                 "DURATION_SECONDS": stint.DURATION_SECONDS,
                 "PLUS_MINUS": stint.PLUS_MINUS,
+                "HOME_PTS": stint.HOME_PTS, "AWAY_PTS": stint.AWAY_PTS,
                 "START_SEC": stint.START_SEC, "END_SEC": stint.END_SEC,
             })
             for po, pi in sub_at.get((g, per, stint.END_SEC), []):

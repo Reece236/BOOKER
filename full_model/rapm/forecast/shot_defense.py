@@ -27,6 +27,7 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 from scipy.sparse import csr_matrix
 from sklearn.linear_model import Ridge
@@ -150,10 +151,20 @@ def season_shot_defense(season):
     # negative rim coef = defender lowers opponent rim-attempt rate = deterrence
     rimd = dict(zip(players, -rim_coef))
 
-    # descriptive make-suppression (raw on-court make-over-expected allowed)
-    expl = shots.assign(d=defs).explode("d")
+    # descriptive on-court make-suppression, split by zone -> CONTEST effectiveness:
+    #   rim_contest   = makes suppressed on rim shots faced while on court
+    #   perim_contest = makes suppressed on perimeter (3PT + midrange) shots faced
+    # On-court attribution -> a team-defense signal (leaky); the best proxy for contest
+    # quality without player-tracking (defender distance on each shot).
+    shots["is_perim"] = ((shots.is3 == 1) | (shots.zone == "Mid-Range")).astype(float)
+    expl = shots.assign(d=defs)[["d", "resid", "is_rim", "is_perim"]].explode("d")
     expl["d"] = expl.d.astype(int)
-    agg = expl.groupby("d").agg(n_faced=("d", "size"), resid_allowed=("resid", "mean"))
+    expl["rim_resid"] = np.where(expl.is_rim == 1, expl.resid, np.nan)
+    expl["perim_resid"] = np.where(expl.is_perim == 1, expl.resid, np.nan)
+    agg = expl.groupby("d").agg(
+        n_faced=("resid", "size"), resid_allowed=("resid", "mean"),
+        rim_resid=("rim_resid", "mean"), n_rim=("rim_resid", "count"),
+        perim_resid=("perim_resid", "mean"), n_perim=("perim_resid", "count"))
     rows_out = []
     for pid, g in agg.iterrows():
         if g.n_faced < 200:
@@ -165,6 +176,8 @@ def season_shot_defense(season):
             "def_rapm": round(float(def_coef.get(pid, 0.0)) * 100, 2),   # pts saved /100 shots
             "rim_deter": round(float(rimd.get(pid, 0.0)) * 100, 2),      # +suppresses rim attempts (pct pts)
             "suppression": round(-float(g.resid_allowed), 4),            # +forces misses
+            "rim_contest": (round(-float(g.rim_resid) * 100, 2) if g.n_rim >= 50 else None),
+            "perim_contest": (round(-float(g.perim_resid) * 100, 2) if g.n_perim >= 50 else None),
         })
     out = pd.DataFrame(rows_out)
     print(f"  shot_defense {season}: {len(shots)} shots tagged, {len(out)} defenders")
@@ -193,12 +206,32 @@ def _season_def_z(season):
         df = pd.read_csv(OUT)
         df = df[(df.season == season) & (df.n_faced >= 300)].copy()
         if len(df) >= 20:
-            # Weight the collinearity-resistant signals: rim-attempt deterrence (the
-            # high-EV-shot-limiting the eye test wants) + make-suppression. The diffuse
-            # points-saved def_rapm is downweighted -- it inherits the same lineup
-            # collinearity that over-credits vets on elite-defense teams.
+            import os
             z = lambda s: (s - s.mean()) / (s.std() or 1.0)
-            comp = 0.65 * z(df.rim_deter) + 0.25 * z(df.suppression) + 0.10 * z(df.def_rapm)
+            if os.environ.get("SD_NUDGE_MODE", "legacy") == "extended":
+                # OOS-learned composite (walk-forward panel predicting next-season
+                # impact_def, R2 .809 -> .820 over the hand-set 65/25/10): rim
+                # deterrence stays dominant ("protect the rim first"), but the
+                # shot-based trio alone misses possession-enders -- foul discipline,
+                # defensive rebounding, steals, blocks. Weights = normalized coefs.
+                try:
+                    pb = pd.read_csv(CACHE / "pbp_skills.csv")
+                    pb = pb[pb.season == season][["PLAYER_ID", "true_stl36",
+                                                  "true_blk36", "true_reb36", "true_pf36"]]
+                    df = df.merge(pb, on="PLAYER_ID", how="left")
+                    for c in ("true_stl36", "true_blk36", "true_reb36", "true_pf36"):
+                        df[c] = df[c].fillna(df[c].median())
+                    comp = (0.26 * z(df.rim_deter) + 0.11 * z(df.suppression)
+                            + 0.08 * z(df.def_rapm) + 0.14 * z(df.true_stl36)
+                            + 0.085 * z(df.true_blk36) + 0.155 * z(df.true_reb36)
+                            - 0.17 * z(df.true_pf36))
+                    comp = z(comp)      # unit SD: nudge_pts stays pts/100 per SD
+                except Exception:
+                    comp = 0.65 * z(df.rim_deter) + 0.25 * z(df.suppression) + 0.10 * z(df.def_rapm)
+            else:
+                # legacy hand-set mix: deterrence + make-suppression; diffuse def_rapm
+                # downweighted (lineup collinearity over-credits vets on elite defenses).
+                comp = 0.65 * z(df.rim_deter) + 0.25 * z(df.suppression) + 0.10 * z(df.def_rapm)
             out = dict(zip(df.PLAYER_ID.astype(int), comp))
     _SD_CACHE[season] = out
     return out

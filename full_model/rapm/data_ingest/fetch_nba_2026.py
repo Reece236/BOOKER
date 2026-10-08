@@ -132,7 +132,63 @@ def walk_lineups(classic, box, home_tid, away_tid):
     tcol = pd.to_numeric(df.PLAYER1_TEAM_ID, errors="coerce").to_numpy()
     et = df.EVENTMSGTYPE.to_numpy()
     desc = df.DESCRIPTION.to_numpy()
+    per = df.PERIOD.to_numpy()
+    roster = {t: set(box[box.tid == t].pid) for t in (home_tid, away_tid)}
+
+    def _in_id(i):
+        m = _SUB_RE.search(str(desc[i]))
+        in_id = name_to_id.get(_norm(m.group(1))) if m else None
+        if in_id is None and m:
+            key = _norm(m.group(1))
+            for nm, pid in name_to_id.items():
+                if nm and (nm in key or key in nm):
+                    in_id = pid
+                    break
+        return in_id
+
+    # Audit fix (2026-07): V3 does NOT log between-period substitutions, so carrying
+    # the lineup across the break left Q2-Q4 lineups stale (38-50% of event rows had
+    # 4/6-man lineups; ~39% of game time fell out of the 5v5 filter -- the real cause
+    # of the "partial 2026 feed"). Re-seed every period >= 2 from in-period activity:
+    # a player whose first involvement in the period is anything other than subbing IN
+    # was on the floor at the start; fill any gap from the carried lineup.
+    def _period_starters(lo, hi, carried):
+        seen, first_in = {}, set()
+        for i in range(lo, hi):
+            if np.isnan(tcol[i]):
+                continue
+            tid = int(tcol[i])
+            if tid not in roster:
+                continue
+            pid = int(p1[i])
+            if et[i] == SUB:
+                if pid in roster[tid] and pid not in seen:
+                    seen[pid] = (tid, "start")          # subbed OUT first -> started
+                q = _in_id(i)
+                if q is not None and q not in seen:
+                    seen[q] = (tid, "in"); first_in.add(q)
+            elif pid in roster[tid] and pid not in seen:
+                seen[pid] = (tid, "start")
+        out = {}
+        for tid in (home_tid, away_tid):
+            st = [p for p, (t, k) in seen.items() if t == tid and k == "start"]
+            if len(st) > 5:                              # bench techs etc.: prefer carried
+                st = sorted(st, key=lambda p: p not in carried[tid])[:5]
+            for p in sorted(carried[tid]):
+                if len(st) >= 5:
+                    break
+                if p not in st and p not in first_in:
+                    st.append(p)
+            out[tid] = set(st) if len(st) == 5 else set(carried[tid])
+        return out
+
+    bounds = {}
     for i in range(len(df)):
+        bounds.setdefault(int(per[i]), [i, i])[1] = i + 1
+    for i in range(len(df)):
+        if i > 0 and per[i] != per[i - 1]:
+            lo, hi = bounds[int(per[i])]
+            cur = _period_starters(lo, hi, cur)
         home_rows.append(tuple(sorted(cur[home_tid])))
         away_rows.append(tuple(sorted(cur[away_tid])))
         if et[i] == SUB:
@@ -140,14 +196,7 @@ def walk_lineups(classic, box, home_tid, away_tid):
             if tid not in cur:
                 continue
             out_id = int(p1[i])
-            m = _SUB_RE.search(str(desc[i]))
-            in_id = name_to_id.get(_norm(m.group(1))) if m else None
-            if in_id is None and m:
-                key = _norm(m.group(1))
-                for nm, pid in name_to_id.items():
-                    if nm and (nm in key or key in nm):
-                        in_id = pid
-                        break
+            in_id = _in_id(i)
             if in_id is not None:
                 cur[tid].discard(out_id)
                 cur[tid].add(in_id)
@@ -157,33 +206,59 @@ def walk_lineups(classic, box, home_tid, away_tid):
 
 
 def stints_from_walk(df):
+    """Segment a walked game into stints with REAL per-side points.
+
+    Audit fix (2026-07): a stint spans event rows a..nxt-1 (the closing sub row is
+    tagged with the outgoing lineup), so its points are
+        score after row nxt-1  -  score after row a-1
+    with the running score forward-filled over the whole GAME (0 at tip). The old
+    version used margin[nxt] - margin[a] with a per-period ffill/bfill, which moved
+    every stint's first event onto the PREVIOUS lineup and dropped/duplicated the
+    first score of each period, and credited the sub->next-event clock gap to the
+    outgoing lineup."""
     df = df.copy()
-    df["SCOREMARGIN"] = pd.to_numeric(df["SCOREMARGIN"], errors="coerce")
+    real = "HOME_SCORE" in df.columns and "AWAY_SCORE" in df.columns
+    if real:
+        hs = pd.to_numeric(df["HOME_SCORE"], errors="coerce")
+        as_ = pd.to_numeric(df["AWAY_SCORE"], errors="coerce")
+    else:                                    # legacy convert() output: margin only
+        hs = pd.to_numeric(df["SCOREMARGIN"], errors="coerce")
+        as_ = hs * 0.0
+    df["_H"], df["_A"] = hs, as_
     rows = []
-    for (gid, per), g in df.groupby(["GAME_ID", "PERIOD"], sort=True):
-        g = g.sort_values("EVENTNUM").reset_index(drop=True)
-        g["SCOREMARGIN"] = g["SCOREMARGIN"].ffill().bfill().fillna(0)
-        sec = g["PCTIMESTRING"].map(_sec_remaining).to_numpy(dtype=float)
-        marg = g["SCOREMARGIN"].to_numpy(dtype=float)
-        home = g["HOME5"].tolist()
-        away = g["AWAY5"].tolist()
-        key = [h + a for h, a in zip(home, away)]
-        starts = [0] + [i for i in range(1, len(g)) if key[i] != key[i - 1]]
-        for s_idx, a in enumerate(starts):
-            nxt = starts[s_idx + 1] if s_idx + 1 < len(starts) else None
-            if nxt is not None:
-                dur = sec[a] - sec[nxt]; pm = marg[nxt] - marg[a]
-            else:
-                dur = sec[a] - sec[len(g) - 1]; pm = marg[len(g) - 1] - marg[a]
-            hl, al = list(home[a]), list(away[a])
-            if dur <= 0 or len(hl) != 5 or len(al) != 5:
-                continue
-            rows.append({
-                "GAME_ID": int(gid), "PERIOD": int(per),
-                "HOME_LINEUP": ", ".join(map(str, hl)),
-                "AWAY_LINEUP": ", ".join(map(str, al)),
-                "DURATION_SECONDS": dur, "PLUS_MINUS": pm,
-            })
+    for gid, gg in df.groupby("GAME_ID", sort=True):
+        gg = gg.sort_values(["PERIOD", "EVENTNUM"]).reset_index(drop=True)
+        gg["_H"] = gg["_H"].ffill().fillna(0.0)
+        gg["_A"] = gg["_A"].ffill().fillna(0.0)
+        gg["_H0"] = gg["_H"].shift(1).fillna(0.0)    # score BEFORE each event
+        gg["_A0"] = gg["_A"].shift(1).fillna(0.0)
+        for per, g in gg.groupby("PERIOD", sort=True):
+            g = g.reset_index(drop=True)
+            sec = g["PCTIMESTRING"].map(_sec_remaining).to_numpy(dtype=float)
+            h1, a1 = g["_H"].to_numpy(float), g["_A"].to_numpy(float)
+            h0, a0 = g["_H0"].to_numpy(float), g["_A0"].to_numpy(float)
+            home = g["HOME5"].tolist()
+            away = g["AWAY5"].tolist()
+            key = [h + a for h, a in zip(home, away)]
+            starts = [0] + [i for i in range(1, len(g)) if key[i] != key[i - 1]]
+            for s_idx, a in enumerate(starts):
+                nxt = starts[s_idx + 1] if s_idx + 1 < len(starts) else len(g)
+                last = nxt - 1
+                # clock runs from the previous stint's closing sub (row a-1) to this
+                # stint's own closing row -- same convention as build_season_stints
+                dur = (sec[a - 1] if a > 0 else sec[0]) - sec[last]
+                hp, ap = h1[last] - h0[a], a1[last] - a0[a]
+                hl, al = list(home[a]), list(away[a])
+                if dur <= 0 or len(hl) != 5 or len(al) != 5:
+                    continue
+                rows.append({
+                    "GAME_ID": int(gid), "PERIOD": int(per),
+                    "HOME_LINEUP": ", ".join(map(str, hl)),
+                    "AWAY_LINEUP": ", ".join(map(str, al)),
+                    "DURATION_SECONDS": dur, "PLUS_MINUS": hp - ap,
+                    "HOME_PTS": hp if real else np.nan,
+                    "AWAY_PTS": ap if real else np.nan,
+                })
     st = pd.DataFrame(rows)
     if st.empty:
         return st
@@ -259,6 +334,11 @@ def build_players_teams(stints, names, home_team, away_team):
 def main():
     games = pd.read_csv(CACHE / f"games_{SEASON}.csv")
     names = {int(p["id"]): p["full_name"] for p in static_players.get_players()}
+    # nba_api's static list lags the draft class -> fall back to cached box-score names
+    for f in BOX_CACHE.glob("*.parquet"):
+        b = pd.read_parquet(f, columns=["personId", "firstName", "familyName"])
+        for pid, fn, ln in zip(b.personId, b.firstName, b.familyName):
+            names.setdefault(int(pid), f"{fn} {ln}".strip())
     home_team = {int(r.GAME_ID): float(ABBR_TO_ID[r.HOME]) for _, r in games.iterrows()}
     away_team = {int(r.GAME_ID): float(ABBR_TO_ID[r.AWAY]) for _, r in games.iterrows()}
     game_ids = [f"{int(g):010d}" for g in games.GAME_ID]
@@ -277,7 +357,7 @@ def main():
     stints = pd.concat(all_st, ignore_index=True)
     players, teams = build_players_teams(stints, names, home_team, away_team)
     stints[["GAME_ID", "PERIOD", "HOME_LINEUP", "AWAY_LINEUP", "POSS", "Y",
-            "DURATION_SECONDS", "PLUS_MINUS"]].to_csv(
+            "DURATION_SECONDS", "PLUS_MINUS", "HOME_PTS", "AWAY_PTS"]].to_csv(
         CACHE / f"stints_{SEASON}.csv", index=False)
     players.to_csv(CACHE / f"players_{SEASON}.csv", index=False)
     teams.to_csv(CACHE / f"teams_{SEASON}.csv", index=False)

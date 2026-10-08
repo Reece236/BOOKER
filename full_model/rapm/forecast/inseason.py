@@ -1,15 +1,17 @@
 """
 BOOKER in-season win-projection model.
 
-As a season unfolds we update each team's projected final win total by blending
-the preseason prior with what's actually happened on the floor. At a series of
-cutoff dates we:
+As a season unfolds we update each team's projected final win total from the
+sequential filter (forecast.sequential): player O/D ratings start at the rating through
+s-1 and are Kalman-updated after every game date; minutes SHARES start at the preseason
+projection and update from observed games (injuries/trades included). At each cutoff:
 
-  1. rebuild player impacts from prior seasons PLUS the current season's stints
-     observed up to that date (the in-season possessions naturally outweigh the
-     prior as they accumulate -- the blend the project wanted),
-  2. weight each player by minutes-played-to-date to get current team strength,
-  3. add wins already banked to the expected wins over the remaining schedule.
+  1. team strength = the filter's pre-game team net on that date (strict: nothing
+     from games on or after the cutoff),
+  2. add wins already banked to the expected wins over the remaining schedule.
+
+(2026-10) Replaces periodic ridge refits weighted by minutes-to-date, which early in
+the season fell back to the FULL-SEASON realized minutes -- a direct leak.
 
 Output cache/inseason_timeline_{season}.csv and inseason_timeline_all.csv:
     season, date, frac, team, games_played, wins_to_date, exp_remaining,
@@ -24,7 +26,7 @@ from scipy.stats import norm
 from . import player_impacts as pi
 
 CACHE = pi.CACHE
-SEASONS = range(2018, 2027)
+SEASONS = range(2018, 2027)   # needs cache/seq_team_daily_{s}.csv
 N_CUTOFFS = 10            # evenly spaced snapshots through the season
 
 
@@ -70,31 +72,24 @@ def expected_remaining(reg, date, nets):
 
 
 def run_season(data, season):
-    if season not in data.GAMES or season not in data.PLAYERS:
+    if season not in data.GAMES:
         return None
-    train = pi.prior_train_seasons(data, season)
-    if not train:
+    dp = CACHE / f"seq_team_daily_{season}.csv"
+    if not dp.exists():
         return None
-    alpha = pi.pick_alpha(data, train)
+    daily = pd.read_csv(dp)
     reg = data.GAMES[season]
     reg = reg[reg.get("SEASON_TYPE", "Regular Season") == "Regular Season"].copy()
-    abbr = dict(zip(data.TEAMS[season].TEAM_ID, data.TEAMS[season].ABBR))
-    season_min = dict(zip(data.PLAYERS[season].PLAYER_ID, data.PLAYERS[season].MINUTES))
     total_dates = sorted(reg.DATE.unique())
-
     rows = []
     for date in cutoff_dates(reg):
-        in_st = data.season_stints_before(season, date)
-        if in_st is None:
-            in_st = data.STINTS[season].iloc[:0]
-        impact, _, last_age = pi.build_impacts(data, train, season, alpha,
-                                               extra_stints=in_st, extra_weight=1.0)
-        mins = minutes_to_date(in_st, data.PLAYERS[season])
-        # fall back to season minutes very early when little has been played
-        use_min = mins if sum(mins.values()) > 5000 else season_min
-        net_by_tid = pi.aggregate_net(data, impact, season, last_age=last_age,
-                                      target_season=season, minutes=use_min)
-        nets = {abbr[t]: v for t, v in net_by_tid.items() if t in abbr}
+        d = daily[daily.date == date]
+        if d.empty:                                   # cutoff on an off-day: last state before it
+            prior = daily[daily.date <= date]
+            if prior.empty:
+                continue
+            d = prior[prior.date == prior.date.max()]
+        nets = dict(zip(d.team, d.net))
         wtd, gp = wins_before(reg, date)
         exp_rem = expected_remaining(reg, date, nets)
         frac = round(total_dates.index(date) / max(1, len(total_dates) - 1), 3) \
