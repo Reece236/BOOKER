@@ -124,9 +124,9 @@ jobs:
 
       # A push made with GITHUB_TOKEN does NOT trigger other workflows (GitHub's
       # anti-recursion rule), so pages.yml's push trigger never fires for this commit.
-      # workflow_dispatch is the documented exception -> deploy explicitly.
+      # workflow_dispatch is the documented exception -> deploy explicitly. Always
+      # (idempotent): also catches up a site left behind by an earlier run.
       - name: Deploy to Pages
-        if: ${{ steps.commit.outputs.pushed == '1' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh workflow run pages.yml -R "${GITHUB_REPOSITORY}" --ref main
