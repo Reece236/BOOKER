@@ -44,6 +44,7 @@ on:
 
 permissions:
   contents: write        # commit the regenerated data.js back to main
+  actions: write         # dispatch the Pages deploy (see last step)
 
 concurrency:
   group: regenerate-data
@@ -107,6 +108,7 @@ jobs:
         run: python export_dashboard_data.py
 
       - name: Commit and push
+        id: commit
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
@@ -118,3 +120,13 @@ jobs:
           fi
           git commit -m "Regenerate data.js (Actions)"
           git push origin HEAD:main
+          echo "pushed=1" >> "$GITHUB_OUTPUT"
+
+      # A push made with GITHUB_TOKEN does NOT trigger other workflows (GitHub's
+      # anti-recursion rule), so pages.yml's push trigger never fires for this commit.
+      # workflow_dispatch is the documented exception -> deploy explicitly.
+      - name: Deploy to Pages
+        if: ${{ steps.commit.outputs.pushed == '1' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run pages.yml -R "${GITHUB_REPOSITORY}" --ref main
