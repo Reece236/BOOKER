@@ -323,7 +323,10 @@ def main():
     metric_rows = []
     for s, g in allg.groupby("season"):
         g = attach_market(g, s)
-        g.to_csv(CACHE / f"game_predictions_{s}.csv", index=False)
+        # raw moneylines stay in memory (ROI below) but never hit the cache: the cache is
+        # published as a public release asset; the vig-free probability is enough downstream
+        g.drop(columns=["ml_home", "ml_away"], errors="ignore").to_csv(
+            CACHE / f"game_predictions_{s}.csv", index=False)
         mll, mbr, mac = metrics(g.model_p_home, g.home_win)
         row = {"season": int(s), "games": len(g),
                "model_logloss": round(mll, 4), "model_brier": round(mbr, 4),
@@ -347,7 +350,8 @@ def main():
     # season to calibrate on (fit in-sample), so it is excluded from the scoreline.
     full_all = pd.concat([attach_market(season_subset(allg, s), s)
                           for s in allg.season.unique()], ignore_index=True)
-    full_all.to_csv(CACHE / "game_predictions_all.csv", index=False)
+    full_all.drop(columns=["ml_home", "ml_away"], errors="ignore").to_csv(
+        CACHE / "game_predictions_all.csv", index=False)
     full = full_all[full_all.calib_in_sample == 0]
     pll, pbr, pac = metrics(full.model_p_home, full.home_win)
     mk = full.dropna(subset=["market_p_home"])
