@@ -1,0 +1,53 @@
+name: Collect injury reports
+
+# Forward-only availability data: there is no historical NBA injury-report archive,
+# and pre-tip availability is the largest identified gap vs the closing line
+# (full_model/rapm/market_gap.py). Every ~30 min across US game hours this appends
+# ESPN injury-report CHANGES to injuries/injury_log.csv on the `data-injuries` branch
+# (kept off main so it doesn't churn history or redeploy Pages).
+#
+# Note: GitHub pauses scheduled workflows in repos with no activity for 60 days;
+# the data commits themselves keep the repo active during the season.
+
+on:
+  schedule:
+    - cron: "*/30 15-23 * * *"   # 11am-7pm ET (UTC-4); GitHub cron times are best-effort
+    - cron: "*/30 0-5 * * *"     # 8pm-1am ET
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: collect-injuries
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4            # main: the collector script
+        with:
+          path: src
+      - uses: actions/checkout@v4            # data branch: the log
+        with:
+          ref: data-injuries
+          path: data
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Snapshot ESPN injury report
+        env:
+          INJURY_DIR: ${{ github.workspace }}/data/injuries
+        run: python src/full_model/rapm/data_ingest/fetch_injuries.py
+      - name: Commit changes
+        working-directory: data
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add injuries
+          if git diff --cached --quiet; then echo "no report changes"; exit 0; fi
+          git commit -m "Injury report $(date -u +%Y-%m-%dT%H:%MZ)"
+          for i in 1 2 3; do git push origin HEAD:data-injuries && exit 0; git pull --rebase origin data-injuries; done
+          exit 1
