@@ -8,9 +8,11 @@ ENGINE (2026-10): the default `sequential` engine reads forecast.sequential -- p
 O/D ratings start at the rating through s-1 and are Kalman-updated after every game
 date; team strength = projected/observed minutes SHARES (forecast.minutes_share), never
 minutes from the game being predicted. Two availability variants are scored:
-  model_p_home          strict  -- nothing about tonight's game is used
-  model_p_home_actives  actives -- shares renormalized over who suits up (pre-tip
-                                   injury-report proxy)
+  model_p_home          PRE-GAME -- availability from games just missed + role (and the
+                                    collected injury report for live seasons); end-of-season
+                                    incentive gap (forecast.incentives) as a feature
+  model_p_home_strict   strict  -- nothing about tonight's availability
+  model_p_home_actives  actives -- who actually suits up (upper bound; audit only)
 GAME_ENGINE=ridge restores the legacy engine (periodic ridge refits + to-date minutes
 over the players who actually played). Team strength is
 the minutes-to-date-weighted sum of player impacts; the home/away net-rating gap
@@ -36,7 +38,7 @@ import pandas as pd
 from . import player_impacts as pi
 
 CACHE = pi.CACHE
-FEATS = ["margin", "formEW", "rest_diff", "b2b_home", "b2b_away"]
+FEATS = ["margin", "formEW", "rest_diff", "b2b_home", "b2b_away", "motiv_diff"]
 FORM_HALFLIFE = 7.0   # games; recency half-life for trailing net-margin "form"
 FORM_WINDOW = 30
 def _model_seasons(data):
@@ -191,6 +193,8 @@ def season_margins_seq(data, season):
     reg = reg[reg.get("SEASON_TYPE", "Regular Season") == "Regular Season"].copy()
     reg = reg.sort_values("DATE").reset_index(drop=True)
     form = _recency_form(reg)
+    from . import incentives as inc
+    motiv = inc.season_incentives(data.GAMES[season])
     seq = G.set_index("GAME_ID")
     last_played, rows = {}, []
     for r in reg.itertuples():
@@ -204,8 +208,13 @@ def season_margins_seq(data, season):
         hf, af = form.get(gid, (0.0, 0.0))
         rows.append({
             "season": season, "date": r.DATE, "home": r.HOME, "away": r.AWAY,
-            "margin": q.net_home_strict - q.net_away_strict,
+            # published margin = PRE-GAME mode (only information public before tip);
+            # strict (no availability info) and actives (who suited up) kept for audit
+            "margin": q.net_home_pregame - q.net_away_pregame,
+            "margin_strict": q.net_home_strict - q.net_away_strict,
             "margin_act": q.net_home_actives - q.net_away_actives,
+            "motiv_diff": (motiv.get(gid, {}).get("away", {}).get("low_motiv", 0)
+                           - motiv.get(gid, {}).get("home", {}).get("low_motiv", 0)),
             "home_win": int(r.HOME_WIN), "formEW": hf - af,
             "rest_diff": rh - ra, "b2b_home": int(rh == 1), "b2b_away": int(ra == 1),
         })
@@ -276,6 +285,8 @@ def main():
     frames = []
     for s in _model_seasons(data):
         df = season_margins_seq(data, s) if engine == "sequential" else season_margins(data, s)
+        if df is not None and "motiv_diff" not in df:
+            df["motiv_diff"] = 0                       # legacy ridge engine
         if df is None or df.empty:
             print(f"season {s}: skipped")
             continue
@@ -295,13 +306,14 @@ def main():
         wp = fit_winprob(tr if len(tr) else allg[allg.season == s])
         m = allg.season == s
         allg.loc[m, "model_p_home"] = wp.predict_proba(allg.loc[m, FEATS].values)[:, 1]
-        if "margin_act" in allg:
-            fa = ["margin_act"] + FEATS[1:]
-            trA = (tr if len(tr) else allg[allg.season == s]).dropna(subset=["margin_act"])
-            okm = m & allg.margin_act.notna()
-            wa = fit_winprob(trA.rename(columns={"margin": "_m", "margin_act": "margin"}))
-            allg.loc[okm, "model_p_home_actives"] = wa.predict_proba(
-                allg.loc[okm, fa].values)[:, 1]
+        for mcol, out in (("margin_act", "model_p_home_actives"), ("margin_strict", "model_p_home_strict")):
+            if mcol not in allg:
+                continue
+            fa = [mcol] + FEATS[1:]
+            trA = (tr if len(tr) else allg[allg.season == s]).dropna(subset=[mcol])
+            okm = m & allg[mcol].notna()
+            wa = fit_winprob(trA.drop(columns=["margin"]).rename(columns={mcol: "margin"}))
+            allg.loc[okm, out] = wa.predict_proba(allg.loc[okm, fa].values)[:, 1]
         if not len(tr):
             allg.loc[m, "calib_in_sample"] = 1
     coefs = dict(zip(FEATS, wp.coef_[0]))

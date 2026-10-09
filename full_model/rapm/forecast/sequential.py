@@ -18,10 +18,13 @@ game date using only games already played -- no realized minutes, no same-game d
             (0 when on the roster but DNP -> injuries pull shares down; trades move a
             player to his new team on his first appearance there). Unallocated presence
             (5 - sum) is filled at the replacement rating.
-  pregame   team net = sum(share * (o + d)) + fill * repl; two availability modes:
-              strict  : shares as estimated -- uses nothing about tonight's game
-              actives : shares renormalized over the players who suit up tonight (the
-                        pre-tip injury-report proxy; still no minutes from the game)
+  pregame   team net = sum(share * (o + d)) + fill * repl; three availability modes:
+              strict  : unconditional expected shares -- nothing about tonight's game
+              pregame : P(plays tonight) from consecutive games just missed + role
+                        (logistic, fit on prior seasons), expected presence via the
+                        fitted redistribution -- only information public before tip
+              actives : who actually suits up (injury-report upper bound), same
+                        redistribution; still no minutes from the game
 
 Outputs (per season):
   cache/seq_games_{s}.csv    GAME_ID, date, home, away, net_home/away (strict, actives)
@@ -51,6 +54,40 @@ H_MEAN, H_SD = 2.5, 1.0
 K0 = 4.0           # projection weight in games for the share blend (tuned 2019-21: 4 > 8 > 16)
 HL_GAMES = 10.0    # recency half-life of observed presence
 AVAIL = 0.85       # typical availability: projected (unconditional) share / AVAIL = share when playing
+# Minutes redistribution when players sit (availability_research.py, fit on realized
+# per-game presence 2019-21, tested 2022-26): absent minutes go to available teammates
+# with weight c^ALPHA (c = share when playing). ALPHA < 1 -> the deeper bench absorbs
+# relatively more; a same-position term fit to zero. Test presence RMSE .1352 -> .1315.
+ALPHA = 0.4
+
+
+def avail_features(streak, c):
+    """Features for P(plays tonight): consecutive team games just missed (one-hot 1..12,
+    0 = played last, -1 = hasn't played for this team yet) and log share-when-playing."""
+    s = np.clip(np.asarray(streak), -1, 12)
+    cols = [(s == k).astype(float) for k in range(1, 13)]
+    lc = np.log(np.clip(np.nan_to_num(np.asarray(c, float), nan=0.02), 0.01, None))
+    return np.column_stack(cols + [(s < 0).astype(float), lc, lc * (s == 0)])
+
+
+def fit_availability(panel, before_season):
+    from sklearn.linear_model import LogisticRegression
+    tr = panel[panel.season < before_season]
+    if len(tr) < 20000:
+        return None
+    return LogisticRegression(C=10, max_iter=3000).fit(avail_features(tr.streak, tr.c), tr.played)
+
+
+def redistribute(cond, avail):
+    """Expected presence {pid: share} for a team-game given share-when-playing `cond`
+    and availability (probability or 0/1) `avail`; sums to 5."""
+    pids = list(cond)
+    c = np.array([max(cond[p], 1e-3) for p in pids]); a = np.array([avail.get(p, 0.0) for p in pids])
+    M = float(np.sum((1 - a) * c))
+    w = a * c ** ALPHA
+    pres = a * c + (M * w / w.sum() if w.sum() > 0 else 0.0)
+    tot = pres.sum()
+    return dict(zip(pids, pres * (5.0 / tot))) if tot > 0 else {}
 
 
 def _league(d):
@@ -68,7 +105,7 @@ def _noise_c(d, L):
     return float(1e4 * np.sum((pts[ok] - ppp * poss[ok]) ** 2) / np.sum(poss[ok]))
 
 
-def run_season(data, s, rat, proj, repl, verbose=True):
+def run_season(data, s, rat, proj, repl, verbose=True, avail_model=None, injury_log=None):
     reg_games = data.GAMES[s]
     reg_games = reg_games[reg_games.SEASON_TYPE == "Regular Season"].sort_values(["DATE", "GAME_ID"])
     st = data.STINTS.get(s)
@@ -77,6 +114,10 @@ def run_season(data, s, rat, proj, repl, verbose=True):
     L = _league(prev)
     C = _noise_c(prev, L)
 
+    from . import injury_availability as ia
+    name_to_pid = {}
+    for ss_, pl_ in data.PLAYERS.items():
+        name_to_pid.update({pi.norm_name(n_): int(p_) for p_, n_ in zip(pl_.PLAYER_ID, pl_.NAME)})
     # ---- player universe + priors -------------------------------------------------
     r1 = rat[rat.season == s - 1].set_index("PLAYER_ID")
     a = unc.attach_attrs(r1.reset_index()[["player", "season"]].assign(minutes=0))
@@ -171,14 +212,38 @@ def run_season(data, s, rat, proj, repl, verbose=True):
             for side, team in (("home", r.HOME), ("away", r.AWAY)):
                 sh = shares(team)
                 row[f"net_{side}_strict"] = team_net(sh, m)
+                shc = shares(team, conditional=True)
+                # pre-game availability: P(plays) from games just missed + role (fit on
+                # prior seasons only) -> expected presence with fitted redistribution
+                h = hist.get(team, [])
+                pids_c = list(shc)
+                streak = []
+                for p in pids_c:
+                    if not any(p in g_ for g_ in h):
+                        streak.append(-1); continue
+                    k_ = 0
+                    for g_ in reversed(h):
+                        if g_.get(p, 0.0) > 0:
+                            break
+                        k_ += 1
+                    streak.append(k_)
+                if avail_model is not None and pids_c:
+                    pp = avail_model.predict_proba(avail_features(streak, [shc[p] for p in pids_c]))[:, 1]
+                else:
+                    pp = np.where(np.array(streak) == 0, 0.9, np.where(np.array(streak) < 0, 0.6, 0.3))
+                pav = dict(zip(pids_c, pp))
+                if injury_log is not None:      # live: official report beats the streak proxy
+                    pav.update({k_: v_ for k_, v_ in ia.availability_override(
+                        injury_log, team, f"{date}T22:00:00Z", name_to_pid).items() if k_ in pav})
+                row[f"net_{side}_pregame"] = team_net(redistribute(shc, pav), m)
                 act = gpres.get((gid, team))
                 if act:
-                    shc = shares(team, conditional=True)
-                    sa = {p: shc.get(p, 0.0) for p in act}
-                    if sum(sa.values()) <= 0:
-                        sa = {p: 1.0 for p in act}
-                    k = 5.0 / sum(sa.values())
-                    row[f"net_{side}_actives"] = team_net({p: x * k for p, x in sa.items()}, m)
+                    cond = {p: shc.get(p, 0.0) for p in set(shc) | set(act)}
+                    for p in act:
+                        if cond[p] <= 0:
+                            cond[p] = 0.1          # unseen player: small role
+                    row[f"net_{side}_actives"] = team_net(
+                        redistribute(cond, {p: 1.0 for p in act}), m)
                 else:
                     row[f"net_{side}_actives"] = np.nan
                 for p, x in sh.items():
@@ -230,16 +295,41 @@ def run_season(data, s, rat, proj, repl, verbose=True):
     return G, Pf, pd.DataFrame(daily)
 
 
+def availability_panel():
+    """Player-game availability panel 2016+ (cached): streak, share-when-playing, played."""
+    p = CACHE / "availability_panel.parquet"
+    if p.exists():
+        P = pd.read_parquet(p)
+        if P.season.min() <= 2016:
+            return P
+    import sys as _s
+    _s.path.insert(0, str(RAPM))
+    import availability_research as ar
+    ctx = ms._Ctx()
+    P = pd.concat([ar.season_games(ctx, s) for s in sorted(ctx.tgs) if s >= 2016], ignore_index=True)
+    P.to_parquet(p)
+    return P
+
+
 def main(seasons=range(2019, 2028)):
     data = pi.BookerData()
     rat = pd.read_csv(RAPM / "booker_bookerformer_ratings.csv")
     allp = ms.load()
+    panel = availability_panel()
     for s in seasons:
         if s not in data.GAMES or s - 1 not in data.STINTS or not (allp.season == s).any():
             print(f"  {s}: skipped"); continue
         proj = allp[allp.season == s]
         repl = float(proj.repl.iloc[0])
-        G, Pf, Dd = run_season(data, s, rat, proj, repl)
+        log = None
+        if s not in data.STINTS:        # live/forward season: use collected injury reports
+            try:
+                from . import injury_availability as ia
+                log = ia.load_log()
+            except Exception as exc:     # no log reachable -> streak proxy only
+                print(f"  {s}: injury log unavailable ({exc})")
+        G, Pf, Dd = run_season(data, s, rat, proj, repl, avail_model=fit_availability(panel, s),
+                               injury_log=log)
         G.to_csv(CACHE / f"seq_games_{s}.csv", index=False)
         Pf.to_parquet(CACHE / f"seq_players_{s}.parquet")
         Dd.to_csv(CACHE / f"seq_team_daily_{s}.csv", index=False)
