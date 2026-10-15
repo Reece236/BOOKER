@@ -686,7 +686,7 @@ def main():
     if gpath.exists():
         gcols = ["grade", "gradeLetter", "gradeOff", "gradeDef", "age",
                  "proj1", "proj1Letter", "proj1Age", "proj2", "proj2Letter", "proj2Age",
-                 "proj3", "proj3Letter", "proj3Age",
+                 "proj3", "proj3Letter", "proj3Age", "proj4", "proj4Letter", "proj4Age",
                  "hybOff", "hybDef", "hybBooker", "hybBkOff", "hybBkDef",
                  "hybWaa", "hybWaaOff", "hybWaaDef"]
         for r in pd.read_csv(gpath).itertuples():
@@ -1002,6 +1002,7 @@ def main():
     fwd = data.PLAYERS.get(2027)
     if fwd is not None:
         abbr = dict(zip(data.TEAMS[2027].TEAM_ID, data.TEAMS[2027].ABBR)) if 2027 in data.TEAMS else {}
+        yr1 = {}        # pid -> (2027 BOOKER, off, def, age) to chain years 2-3 off the forecast
         for PROJ in (2027, 2028, 2029):
             t = PROJ - 2026
             for prow in fwd.itertuples():
@@ -1061,6 +1062,19 @@ def main():
                             row[f] = round(row[f] + dv / 2.0, 2)
                     row["waa"] = row["waaModel"] = round(kpm * mins * pb, 2)
                     row["projSource"] = "booker-proj" if gs == 2026 else "carry (lost season)"
+                if PROJ == 2027:
+                    yr1[pid] = (row["bookerScore"], row.get("bookerOff"), row.get("bookerDef"), a1)
+                elif pid in yr1 and yr1[pid][3] is not None and a1 is not None:
+                    # years 2-3 continue FROM the year-1 forecast (plus aging) instead of
+                    # restarting from the 2026 score -- otherwise the path zig-zags
+                    # (Siakam 2.7 -> 0.6 -> 1.9) whenever PROJ regresses year 1
+                    b1, o1, d1, ay = yr1[pid]
+                    dv = _curve(a1) - _curve(ay)
+                    row["bookerScore"] = round(b1 + dv, 2)
+                    if o1 is not None: row["bookerOff"] = round(o1 + dv / 2.0, 2)
+                    if d1 is not None: row["bookerDef"] = round(d1 + dv / 2.0, 2)
+                    row["waa"] = row["waaModel"] = round(kpm * mins * row["bookerScore"], 2)
+                    row["projSource"] = "chained from year-1 forecast"
                 nm = cv.norm_name(prow.NAME)
                 lb.attach_contract_fields(row, pos_by_nm, {nm: (a1 or 27.0)}, yos, row["bookerScore"])
                 players.append(row)
