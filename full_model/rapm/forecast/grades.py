@@ -61,10 +61,19 @@ def _letter(g100):
     return "F"
 
 
+# Aging coefficients FITTED (2026-10) on observed one-year changes of the smoothed grade
+# (players >=1000 min with >=200/500 min the next season -- identical fits, so
+# survivorship isn't driving it): rise -0.0135, decline -0.0094 in grade-z per
+# d((age-27)^2). The old hand-set decline (-0.045) was ~5x too steep: it projected a
+# 32-year-old to lose 7-9 grade points a year where real players lost ~1.5, which is what
+# produced the "cliffs" in 3-year projections (Siakam 64 -> 42 by 34).
+AGE_RISE, AGE_DECLINE = -0.014, -0.010
+
+
 def age_curve_z(age):
-    """Aging curve in grade-z units (0 at peak 27; gentler rise, steeper decline)."""
+    """Aging curve in grade-z units (0 at peak 27), fitted (see AGE_RISE/AGE_DECLINE)."""
     d = age - AGE_PEAK
-    return -0.018 * d * d if d <= 0 else -0.045 * d * d
+    return AGE_RISE * d * d if d <= 0 else AGE_DECLINE * d * d
 
 
 def _z(s):
@@ -208,11 +217,11 @@ def build(seasons=range(2018, 2027)):
         if a is None or (isinstance(a, float) and np.isnan(a)):
             continue
         base = last.gz - age_curve_z(a)        # peak-anchored talent (remove current-age effect)
-        for t in (1, 2, 3):
+        for t in (1, 2, 3, 4):
             za = base + age_curve_z(a + t)
             proj[(int(pid), t)] = (to100(za), _letter(to100(za)), round(float(a + t), 0))
     D["isLatest"] = D.season == D.groupby("PLAYER_ID").season.transform("max")
-    for t in (1, 2, 3):
+    for t in (1, 2, 3, 4):
         D[f"proj{t}"] = [proj.get((p, t), (None, None, None))[0] if lt else None
                          for p, lt in zip(D.PLAYER_ID, D.isLatest)]
         D[f"proj{t}Letter"] = [proj.get((p, t), (None, None, None))[1] if lt else None

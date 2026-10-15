@@ -60,7 +60,7 @@ def _booker_aged_nets(data, season):
     # prior-only: the rating THROUGH season-1 (row season-1), aged one year
     if r is None or (season - 1) not in set(r.season):
         return None
-    g = r[r.season == season - 1]
+    g = pi.ratings_through(season - 1, r)
     imp = {}
     for pid, v in zip(g.PLAYER_ID, g.impact_total):
         ar = _BK_CACHE["age_ref"].get(int(pid))
@@ -163,7 +163,8 @@ def top7_adjust(season):
     if not RATINGS.exists():
         return {}
     r = pd.read_csv(RATINGS)
-    imp = dict(zip(r[r.season == season - 1].PLAYER_ID, r[r.season == season - 1].impact_total))
+    r1 = pi.ratings_through(season - 1, r)
+    imp = dict(zip(r1.PLAYER_ID, r1.impact_total))
     proj = ms.load(season)
     adj = {}
     for ab, g in proj.groupby("team"):
@@ -180,7 +181,7 @@ def proj_ratings_frame(ratings, season):
     """Pseudo ratings frame for unc.team_net_sd: projected roster + projected minutes,
     rating sd from the prior-only row (season-1); unrated players get the median sd."""
     proj = ms.load(season)
-    r = ratings[ratings.season == season - 1].set_index("PLAYER_ID")
+    r = pi.ratings_through(season - 1, ratings).set_index("PLAYER_ID")
     so = proj.PLAYER_ID.map(r.sd_off).fillna(r.sd_off.median() if len(r) else 2.0)
     sd = proj.PLAYER_ID.map(r.sd_def).fillna(r.sd_def.median() if len(r) else 2.0)
     return pd.DataFrame({"season": season, "team": proj.team, "minutes": proj.proj_minutes,

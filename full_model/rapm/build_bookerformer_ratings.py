@@ -59,7 +59,7 @@ def main(seasons):
     def _up(season, pid):
         return upside.get((season, pid), up_latest.get(pid, 0.0))
 
-    all_rows = []
+    all_rows, carry = [], []
     for target in seasons:
         # rating THROUGH `target`: train on target-2..target, decay anchored at target+1
         train = [s for s in range(target - 2, target + 1) if s in data.STINTS]
@@ -78,6 +78,18 @@ def main(seasons):
         for r in post.itertuples():
             row = pl[pl.PLAYER_ID == r.PLAYER_ID]
             if row.empty:
+                # LOST SEASON (e.g. Haliburton 2025-26, Achilles): the fit through `target`
+                # still carries his rating (built from earlier seasons), but he has no
+                # season row. Keep it in rating_carry.csv so prior-only consumers for
+                # target+1 don't fall back to replacement level.
+                prev = data.PLAYERS.get(target - 1)
+                pm = prev[prev.PLAYER_ID == r.PLAYER_ID] if prev is not None else prev
+                if pm is not None and len(pm) and float(pm.MINUTES.iloc[0]) >= 500:
+                    carry.append({"season": target, "rating_through": target, "PLAYER_ID": int(r.PLAYER_ID),
+                                  "player": r.NAME, "team": data.abbr_of.get(int(pm.TEAM_ID.iloc[0]), "?"),
+                                  "minutes": 0, "last_minutes": int(pm.MINUTES.iloc[0]),
+                                  "impact_off": round(r.impact_off, 2), "impact_def": round(r.impact_def, 2),
+                                  "impact_total": round(r.impact_total, 2), "missed_season": 1})
                 continue
             pres = float(row.presence.iloc[0])
             all_rows.append({
@@ -104,6 +116,17 @@ def main(seasons):
     if not all_rows:
         print("no rows produced")
         return
+    if carry:
+        from forecast import uncertainty as unc
+        C = pd.DataFrame(carry)
+        so, sd = unc.player_sd(unc.attach_attrs(C.assign(minutes=C.last_minutes)))
+        C["sd_off"], C["sd_def"] = (so * 1.25).round(3), (sd * 1.25).round(3)   # + lost-season doubt
+        cp = CACHE / "rating_carry.csv"
+        if cp.exists():
+            old = pd.read_csv(cp)
+            C = pd.concat([old[~old.season.isin(set(C.season))], C], ignore_index=True)
+        C.sort_values(["season", "PLAYER_ID"]).to_csv(cp, index=False)
+        print(f"carried {len(carry)} lost-season ratings -> {cp.name}")
     out = pd.DataFrame(all_rows)
     out = out[out.minutes >= 250].copy()
     # Heteroscedastic uncertainty: overwrite the (near-constant) model sd with a

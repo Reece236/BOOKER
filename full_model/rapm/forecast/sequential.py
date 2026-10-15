@@ -119,7 +119,7 @@ def run_season(data, s, rat, proj, repl, verbose=True, avail_model=None, injury_
     for ss_, pl_ in data.PLAYERS.items():
         name_to_pid.update({pi.norm_name(n_): int(p_) for p_, n_ in zip(pl_.PLAYER_ID, pl_.NAME)})
     # ---- player universe + priors -------------------------------------------------
-    r1 = rat[rat.season == s - 1].set_index("PLAYER_ID")
+    r1 = pi.ratings_through(s - 1, rat).set_index("PLAYER_ID")     # + lost-season carries
     a = unc.attach_attrs(r1.reset_index()[["player", "season"]].assign(minutes=0))
     ages = dict(zip(r1.index, a.age.values))
     pids = set(proj.PLAYER_ID.astype(int))

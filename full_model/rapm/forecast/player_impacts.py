@@ -94,6 +94,20 @@ def load_box(path=None):
     return bk[~multi | tot].copy()
 
 
+def ratings_through(season, rat=None):
+    """Ratings THROUGH `season` for prior-only use in season+1: the season's rows plus
+    lost-season carries (cache/rating_carry.csv -- players who missed `season` entirely
+    but whose fitted rating still exists), so a returning star isn't replacement level."""
+    r = pd.read_csv(RAPM / "booker_bookerformer_ratings.csv") if rat is None else rat
+    r = r[r.season == season]
+    cp = CACHE / "rating_carry.csv"
+    if cp.exists():
+        c = pd.read_csv(cp)
+        c = c[(c.season == season) & ~c.PLAYER_ID.isin(r.PLAYER_ID)]
+        r = pd.concat([r, c], ignore_index=True)
+    return r
+
+
 def parse_lineup(s):
     return [int(x) for x in str(s).split(",") if x.strip()]
 

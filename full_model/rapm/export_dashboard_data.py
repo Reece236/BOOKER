@@ -975,13 +975,30 @@ def main():
     # ---- predictive future-season rows: 2027 / 2028 / 2029 (3 years out).
     # Each player's 3-year GRADE projection (aged along the curve) plus their 2026 hybrid
     # BOOKER/WAA aged forward in value units. Static roster (the 2027 cloned roster).
-    AGE_Q = -0.06   # BOOKER-unit aging per (age-27)^2 (peak 27)
+    # BOOKER-unit aging per (age-27)^2, FITTED (2026-10) on one-year changes of the hybrid
+    # score (>=1000 min, >=200 next): rise -0.047, decline -0.040 (was a flat -0.06,
+    # which over-aged veterans' 2028-29 rows)
+    AGE_RISE, AGE_DECL = -0.047, -0.040
+
+    def _curve(a):
+        d = a - 27.0
+        return (AGE_RISE if d <= 0 else AGE_DECL) * d * d
 
     def _age_val(v, a0, a1):
         if v is None or a0 is None:
             return v
-        return round(v + AGE_Q * ((a1 - 27) ** 2 - (a0 - 27) ** 2), 2)
+        return round(v + _curve(a1) - _curve(a0), 2)
 
+    # latest graded season per player (for players who lost 2025-26) + lost-season carries
+    latest_grade = {}
+    for (pid_, s_), gv in grades_map.items():
+        if s_ <= 2026 and (pid_ not in latest_grade or s_ > latest_grade[pid_][0]):
+            latest_grade[pid_] = (s_, gv)
+    carry_2026 = {}
+    cpath = HERE / "cache" / "rating_carry.csv"
+    if cpath.exists():
+        cc = pd.read_csv(cpath)
+        carry_2026 = dict(zip(cc[cc.season == 2026].PLAYER_ID.astype(int), cc[cc.season == 2026].impact_total))
     fwd = data.PLAYERS.get(2027)
     if fwd is not None:
         abbr = dict(zip(data.TEAMS[2027].TEAM_ID, data.TEAMS[2027].ABBR)) if 2027 in data.TEAMS else {}
@@ -990,17 +1007,25 @@ def main():
             for prow in fwd.itertuples():
                 pid = int(prow.PLAYER_ID)
                 mins = float(prow.MINUTES)
-                g26 = grades_map.get((pid, 2026))
-                if mins < 250 or not g26 or g26.get("hybBooker") is None or g26.get(f"proj{t}") is None:
+                g26, gs = grades_map.get((pid, 2026)), 2026
+                if g26 is None and pid in latest_grade:          # lost 2025-26 season
+                    gs, g26 = latest_grade[pid]
+                ti = t + (2026 - gs)                              # projection horizon from his last graded season
+                if mins < 250 or not g26 or g26.get("hybBooker") is None or ti > 4 \
+                        or g26.get(f"proj{ti}") is None:
                     continue
                 a0 = g26.get("age")
-                a1 = (a0 + t) if a0 is not None else None
+                a1 = (a0 + ti) if a0 is not None else None
+                if gs != 2026:
+                    t_proj = ti
+                else:
+                    t_proj = t
                 row = {
                     "pid": pid, "season": PROJ, "player": prow.NAME,
                     "team": abbr.get(prow.TEAM_ID, "?"), "min": round(mins),
                     "projMin": round(mins),
-                    "grade": g26[f"proj{t}"], "gradeLetter": g26[f"proj{t}Letter"],
-                    "age": g26[f"proj{t}Age"],
+                    "grade": g26[f"proj{t_proj}"], "gradeLetter": g26[f"proj{t_proj}Letter"],
+                    "age": g26[f"proj{t_proj}Age"],
                     "bookerScore": _age_val(g26["hybBooker"], a0, a1),
                     "bookerOff": _age_val(g26["hybBkOff"], a0, a1),
                     "bookerDef": _age_val(g26["hybBkDef"], a0, a1),
@@ -1019,8 +1044,12 @@ def main():
                 # quantity the trajectory's year-1 point plots -- and re-derive WAA
                 # from projected minutes so the board's rank blend follows.
                 pjv = proj_map.get((pid, 2026)) if PROJ == 2027 else None
+                if pjv is None and PROJ == 2027 and pid in carry_2026:
+                    # no 2026 season -> no PROJ features; use the carried rating through
+                    # 2026 (built from his earlier seasons), aged one year
+                    pjv = carry_2026[pid] + _curve(a1) - _curve(a1 - 1) if a1 is not None else carry_2026[pid]
                 if pjv is not None:
-                    m26 = model_map.get((pid, 2026)) or {}
+                    m26 = model_map.get((pid, gs)) or {}
                     anchor = m26.get("waaBayesian100")
                     delta = ((g26["hybBooker"] - anchor)
                              if anchor is not None else 0.0)
@@ -1031,7 +1060,7 @@ def main():
                         if row.get(f) is not None:
                             row[f] = round(row[f] + dv / 2.0, 2)
                     row["waa"] = row["waaModel"] = round(kpm * mins * pb, 2)
-                    row["projSource"] = "booker-proj"
+                    row["projSource"] = "booker-proj" if gs == 2026 else "carry (lost season)"
                 nm = cv.norm_name(prow.NAME)
                 lb.attach_contract_fields(row, pos_by_nm, {nm: (a1 or 27.0)}, yos, row["bookerScore"])
                 players.append(row)

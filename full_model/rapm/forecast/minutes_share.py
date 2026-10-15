@@ -49,7 +49,8 @@ OPEN_GAMES = 10
 SLOT_MIN = 82 * 48.0          # one rotation slot over a full season (presence 1.0)
 FIRST_TRAIN = 2018
 FEATS = ["prev", "prev2", "gp_prev", "rating", "rating_missing", "r_rank", "r_z",
-         "p_rank", "pos_depth", "age", "rookie", "changed", "roster_n", "roster_prev_sum"]
+         "p_rank", "pos_depth", "age", "rookie", "changed", "roster_n", "roster_prev_sum",
+         "missed_prev"]
 POS_GROUP = {"PG": "G", "SG": "G", "SF": "W", "PF": "B", "C": "B"}
 
 
@@ -133,7 +134,7 @@ class _Ctx:
 
 def features(ctx, s, roster):
     """roster {team: [pid]} -> feature frame for season s (inputs strictly <= s-1)."""
-    r1 = ctx.rat[ctx.rat.season == s - 1].set_index("PLAYER_ID").impact_total
+    r1 = pi.ratings_through(s - 1, ctx.rat).set_index("PLAYER_ID").impact_total
     p1 = ctx.pl.get(s - 1)
     p2 = ctx.pl.get(s - 2)
     rows = []
@@ -155,6 +156,9 @@ def features(ctx, s, roster):
     X = pd.DataFrame(rows)
     if X.empty:
         return X
+    # returning from a LOST season (no minutes last year, a real role the year before):
+    # lets the model learn returners' workloads instead of reading them as fringe players
+    X["missed_prev"] = ((X.prev < 0.02) & (X.prev2 > 0.2)).astype(int)
     X["rating_missing"] = X.rating.isna().astype(int)
     X["rating"] = X.rating.fillna(pi.PRIOR_BASE)
     a = unc.attach_attrs(X.rename(columns={"name": "player"})[["player", "season"]].assign(minutes=0))
@@ -193,7 +197,7 @@ def replacement_rating(ctx, seasons):
         if s not in ctx.tgs:
             continue
         ros = opening_roster(ctx.tgs[s])
-        r1 = ctx.rat[ctx.rat.season == s - 1].set_index("PLAYER_ID").impact_total
+        r1 = pi.ratings_through(s - 1, ctx.rat).set_index("PLAYER_ID").impact_total
         tp = ctx.tp[s]
         for t, p, pres in zip(tp.team, tp.PLAYER_ID, tp.pres):
             if p in set(ros.get(t, [])):
