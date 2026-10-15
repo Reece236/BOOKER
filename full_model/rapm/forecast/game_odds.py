@@ -8,11 +8,15 @@ ENGINE (2026-10): the default `sequential` engine reads forecast.sequential -- p
 O/D ratings start at the rating through s-1 and are Kalman-updated after every game
 date; team strength = projected/observed minutes SHARES (forecast.minutes_share), never
 minutes from the game being predicted. Two availability variants are scored:
-  model_p_home          PRE-GAME -- availability from games just missed + role (and the
-                                    collected injury report for live seasons); end-of-season
-                                    incentive gap (forecast.incentives) as a feature
+  model_p_home          LOOKBACK basis for completed games = ACTIVES: who suited up that night
+                        (the books knew the inactive list at tip), each weighted by his PROJECTED
+                        share-when-playing -- never the minutes he actually logged. This is what
+                        every model-vs-market number (log-loss, calibration, ROI) is scored on.
+  model_p_home_pregame  PRE-GAME -- availability from games just missed + role (and the
+                        collected injury report for live seasons); used for FUTURE games
   model_p_home_strict   strict  -- nothing about tonight's availability
-  model_p_home_actives  actives -- who actually suits up (upper bound; audit only)
+  model_p_home_actives  same as model_p_home where lineups exist (kept for audit)
+All share the end-of-season incentive feature (forecast.incentives).
 GAME_ENGINE=ridge restores the legacy engine (periodic ridge refits + to-date minutes
 over the players who actually played). Team strength is
 the minutes-to-date-weighted sum of player impacts; the home/away net-rating gap
@@ -316,6 +320,11 @@ def main():
             allg.loc[okm, out] = wa.predict_proba(allg.loc[okm, fa].values)[:, 1]
         if not len(tr):
             allg.loc[m, "calib_in_sample"] = 1
+    # LOOKBACK basis: the market knew who was inactive at tip, so historical model-vs-market
+    # scoring uses the actives probability (pre-game where a game has no lineup data)
+    allg["model_p_home_pregame"] = allg.model_p_home
+    allg["model_p_home"] = allg.model_p_home_actives.fillna(allg.model_p_home_pregame)
+    allg["prob_basis"] = np.where(allg.model_p_home_actives.notna(), "actives", "pregame")
     coefs = dict(zip(FEATS, wp.coef_[0]))
     print(f"win-prob (latest walk-forward fit): HCA(intercept) {wp.intercept_[0]:.3f}, "
           + ", ".join(f"{k} {v:+.4f}" for k, v in coefs.items()))
@@ -331,6 +340,8 @@ def main():
         row = {"season": int(s), "games": len(g),
                "model_logloss": round(mll, 4), "model_brier": round(mbr, 4),
                "model_acc": round(mac, 4),
+               "model_logloss_pregame": round(metrics(g.model_p_home_pregame, g.home_win)[0], 4),
+               "basis": "actives (who suited up; projected shares, no minutes)",
                "calib_in_sample": int(g.calib_in_sample.max())}
         mk = g.dropna(subset=["market_p_home"])
         if len(mk):

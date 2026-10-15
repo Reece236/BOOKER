@@ -860,13 +860,16 @@
     const pooled = gm.find((m) => m.label === "Pooled") || {};
     const hasMkt = pooled.marketLogloss != null;
     $("#go-lede").textContent = hasMkt
-      ? "Pre-tip win probabilities vs the closing moneyline (vig removed)."
+      ? "Lookback basis: the model knows who suited up each night (books knew the inactive list at tip) " +
+        "and weights them by projected minutes share, never the minutes they actually played. " +
+        "Scored against the closing moneyline, vig removed, on the same games."
       : "Pre-tip win probabilities vs outcomes; market lines unavailable for recent seasons.";
     const cards = [
       ["Model log-loss", fmt(pooled.modelLogloss, 4), "lower is better"],
       ["Model accuracy", pooled.modelAcc != null ? (pooled.modelAcc * 100).toFixed(1) + "%" : "\u2014", "straight-up picks"],
     ];
     if (hasMkt) {
+      cards.push(["Model vs market games", fmt(pooled.modelLoglossMkt, 4), `same ${pooled.marketGames} games as the line`]);
       cards.push(["Market log-loss", fmt(pooled.marketLogloss, 4), `closing line (n=${pooled.marketGames})`]);
       cards.push(["Flat-bet ROI", pooled.roi != null ? signed(pooled.roi * 100, 1) + "%" : "\u2014",
         `value side, ${pooled.nBets} bets`]);

@@ -56,6 +56,8 @@ def load_game_metrics():
                "modelAcc": _f(r, "model_acc"), "marketLogloss": _f(r, "market_logloss"),
                "marketBrier": _f(r, "market_brier"), "marketAcc": _f(r, "market_acc"),
                "marketGames": _i(r, "market_games"),
+               "modelLoglossMkt": _f(r, "model_logloss_mkt_games"),
+               "modelLoglossPregame": _f(r, "model_logloss_pregame"),
                "roi": _f(r, "roi"), "nBets": _i(r, "n_bets")}
         out.append(row)
     return out
