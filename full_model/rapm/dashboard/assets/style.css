@@ -17,13 +17,14 @@
   --heat:#141310;
   --live:#a33a2c;
   --r-red:#b5463c; --r-org:#c98a2b; --r-grn:#2f7d4f; --r-brt:#3d9a62; --r-blu:#3b6ea8;
-  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
-  --mono:"SF Mono",ui-monospace,SFMono-Regular,Menlo,"DejaVu Sans Mono",Consolas,monospace;
-  --serif:Georgia,"Times New Roman",serif;
+  --sans:Arial,Helvetica,sans-serif;
+  --mono:Arial,Helvetica,sans-serif;   /* numbers stay aligned via tabular-nums */
+  --serif:Arial,Helvetica,sans-serif;
 }
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
 body{
+  font-variant-numeric:tabular-nums;
   margin:0; background:var(--paper); color:var(--ink);
   font-family:var(--sans); font-size:14px; line-height:1.5;
   -webkit-font-smoothing:antialiased;

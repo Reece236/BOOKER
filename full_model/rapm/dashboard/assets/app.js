@@ -990,7 +990,7 @@
             ctx.save();
             ctx.strokeStyle = r.c; ctx.setLineDash([5, 4]); ctx.lineWidth = 1.5;
             ctx.beginPath(); ctx.moveTo(a.left, yy); ctx.lineTo(a.right, yy); ctx.stroke();
-            ctx.setLineDash([]); ctx.fillStyle = r.c; ctx.font = "11px sans-serif"; ctx.textAlign = "right";
+            ctx.setLineDash([]); ctx.fillStyle = r.c; ctx.font = "11px Arial, Helvetica, sans-serif"; ctx.textAlign = "right";
             ctx.fillText(r.t, a.right - 4, yy - 4); ctx.restore();
           });
         },
@@ -1446,7 +1446,7 @@
         interaction: { mode: "nearest", intersect: false },
         plugins: {
           legend: { labels: { filter: (it) => !it.text.startsWith("_"),
-                              font: { family: "ui-monospace, Menlo, monospace", size: 11 } } },
+                              font: { family: "Arial, Helvetica, sans-serif", size: 11 } } },
           tooltip: { callbacks: {
             title: (its) => its.length ? seasonLabel(Math.round(its[0].parsed.x)) : "",
             label: (it) => {
@@ -1459,7 +1459,7 @@
         },
         scales: {
           x: { type: "linear", ticks: { stepSize: 1, callback: (v) => Number.isInteger(v) ? seasonLabel(v) : "",
-               font: { family: "ui-monospace, Menlo, monospace", size: 10 } }, grid: { color: chartGrid() } },
+               font: { family: "Arial, Helvetica, sans-serif", size: 10 } }, grid: { color: chartGrid() } },
           y: { title: { display: true, text: yLabel }, grid: { color: chartGrid() } },
         },
       },
@@ -1524,7 +1524,7 @@
         interaction: { mode: "nearest", intersect: false },
         plugins: {
           legend: { labels: { filter: (it) => !it.text.startsWith("_"),
-                              font: { family: "ui-monospace, Menlo, monospace", size: 11 } } },
+                              font: { family: "Arial, Helvetica, sans-serif", size: 11 } } },
           tooltip: { callbacks: {
             title: (its) => its.length ? seasonLabel(Math.ceil(its[0].parsed.x)) : "",
             label: (it) => it.dataset.label.startsWith("_") ? null
@@ -1533,7 +1533,7 @@
         },
         scales: {
           x: { type: "linear", ticks: { stepSize: 1, callback: (v) => Number.isInteger(v) ? seasonLabel(v) : "",
-               font: { family: "ui-monospace, Menlo, monospace", size: 10 } }, grid: { color: chartGrid() } },
+               font: { family: "Arial, Helvetica, sans-serif", size: 10 } }, grid: { color: chartGrid() } },
           y: { title: { display: true, text: "BOOKER (+/- per 100 poss)" },
                grid: { color: chartGrid() } },
         },
