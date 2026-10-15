@@ -83,7 +83,7 @@
     $("#skill-bars").innerHTML = rows;
   }
   // ---- head-to-head player comparison (full true-skill profile) ----
-  const SKILL_ORDER = ["offense", "defense", "three_pct", "rim_finish", "efficiency",
+  const SKILL_ORDER = ["offense", "defense", "def_interior", "def_perimeter", "three_pct", "rim_finish", "efficiency",
     "shot_making", "free_throw", "self_creation", "off_gravity", "on_gravity", "playmaking",
     "creation", "foul_draw", "ball_security", "rebounding", "steals", "rim_protect",
     "discipline", "rim_contest", "perimeter_contest", "rim_deterrence", "make_limiting",
@@ -261,6 +261,7 @@
     if (v === "trajectory") renderTrajectory();
     if (v === "gameodds") renderGameOdds();
     if (v === "leaders") renderLeaders();
+    if (v === "draft") renderDraft();
     if (v === "matchups") renderMatchup();
     if (v === "diagnostics") renderDiagnostics();
     if (v === "method") renderMethod();
@@ -1216,7 +1217,7 @@
         `<div class="ll-row"><span class="ll-name">${r.player}</span>`
         + `<span class="ll-imp ${r.impactTotal >= 0 ? "pos" : "neg"}" title="impact / 100 poss">${signed(r.impactTotal, 1)}</span>`
         + `<input type="number" min="0" step="50" value="${r.minutes}" data-pid="${r.pid}" class="ll-min" />`
-        + `<button data-pid="${r.pid}" class="ll-x" title="remove">✕</button></div>`).join("");
+        + `<button data-pid="${r.pid}" class="ll-x" title="remove">remove</button></div>`).join("");
   }
   function llRecompute() {
     const rost = LL.roster.filter((r) => r.minutes > 0);
@@ -1418,7 +1419,7 @@
     const series = TJ.players.map((p) => tjSkillSeries(p.pid, metric)).filter(Boolean);
     $("#tj-chips").innerHTML = series.map((c, i) =>
       `<button class="comp-chip" data-rm="${c.pid}" style="border-color:${TJ_COLORS[i % TJ_COLORS.length]}">` +
-      `${c.name}<small>✕</small></button>`).join("");
+      `${c.name}<small> remove</small></button>`).join("");
     destroy("tj");
     $("#tj-verdict-panel").hidden = true;
     if (!series.length) {
@@ -1478,7 +1479,7 @@
     const careers = TJ.players.map((p) => tjCareer(p.pid)).filter(Boolean);
     $("#tj-chips").innerHTML = careers.map((c, i) =>
       `<button class="comp-chip" data-rm="${c.last.pid}" style="border-color:${TJ_COLORS[i % TJ_COLORS.length]}">` +
-      `${c.name}<small>✕</small></button>`).join("");
+      `${c.name}<small> remove</small></button>`).join("");
     destroy("tj");
     if (!careers.length) {
       $("#tj-note").textContent = "Type a name above to add a player.";
@@ -1578,7 +1579,7 @@
     const selA = $("#trade-team-a"), selB = $("#trade-team-b");
     if (!tradeReady) {
       selA.innerHTML = teams.map((t) => `<option value="${t}">${t} \u2014 ${teamName(t)}</option>`).join("");
-      selB.innerHTML = `<option value="FA">\u2726 Free agents (sign)</option>`
+      selB.innerHTML = `<option value="FA">Free agents (sign)</option>`
         + teams.map((t) => `<option value="${t}">${t} \u2014 ${teamName(t)}</option>`).join("");
       selA.value = teams.includes("LAL") ? "LAL" : teams[0];
       selB.value = teams.includes("NOP") ? "NOP" : teams[1] || teams[0];
@@ -1696,7 +1697,7 @@
     }
     const legalHtml = faB
       ? `<span class="sb-legal ok">signs for ${$("#trade-cards").dataset.faCost}/yr</span>`
-      : `<span class="sb-legal ${legal ? "ok" : "bad"}">${legal ? "\u2713 salary-legal" : "\u2717 salary mismatch"}</span>`;
+      : `<span class="sb-legal ${legal ? "ok" : "bad"}">${legal ? "Salary-legal" : "Salary mismatch"}</span>`;
     $("#trade-cards").innerHTML = `<div class="scoreboard">
       <div class="sb-verdict ${vcls}"><span>${verdict}</span>${legalHtml}</div>
       <div class="sb-grid ${faB ? "solo" : ""}">${teamCard(ta, wA0, dA, chA0, chA1, outA, inA)}${faB ? "" : teamCard(tb, wB0, dB, chB0, chB1, outB, inB)}</div>
@@ -1805,6 +1806,8 @@
     ["bookerScore", "BOOKER"],
     ["offense", "Off"],
     ["defense", "Def"],
+    ["def_interior", "IntD"],
+    ["def_perimeter", "PerD"],
     ["three_pct", "3P%"],
     ["rim_finish", "Rim%"],
     ["efficiency", "eFG%"],
@@ -2179,7 +2182,7 @@
     const gs = FM.games.map((g, gi) => ({ ...g, gi })).filter((g) => g.date === FM.date);
     const season = gs.length ? gs[0].season : null;
     $("#fm-matchdays").innerHTML =
-      `<div class="league-head">\ud83c\udfc0 NBA <small>${season ? seasonLabel(season) : ""}${gs.some((g) => g.type === "P") ? " \u00b7 Playoffs" : ""}</small></div>` +
+      `<div class="league-head">NBA <small>${season ? seasonLabel(season) : ""}${gs.some((g) => g.type === "P") ? " \u00b7 Playoffs" : ""}</small></div>` +
       `<div class="match-list">` + gs.map(matchRowHtml).join("") + `</div>`;
   }
   function matchRowHtml(g) {
@@ -2256,7 +2259,7 @@
         rows.map(([pid, r]) => {
           const p = rowOf(pid);
           return `<div class="rl-row" data-pid="${pid}"><span class="nm">${p ? p.player : pid}</span>` +
-            `${pid === best ? `<span class="motm">\u2605 MOTM</span>` : ""}<span class="mn"></span>${rbadge(r)}</div>`;
+            `${pid === best ? `<span class="motm">MOTM</span>` : ""}<span class="mn"></span>${rbadge(r)}</div>`;
         }).join("") + `</div>`;
     };
     return `<div style="display:flex;gap:12px;flex-wrap:wrap">${side(g.home)}${side(g.away)}</div>
@@ -2387,7 +2390,7 @@
     return `<div class="br-series ${s.rnd === 4 ? "final" : ""}" data-gi="${s.last}">` +
       ts.map(([t, w], i) =>
         `<div class="br-t ${done ? (i === 0 ? "won" : "lost") : ""}">${tmono(t)} ${t}<span class="wn">${w}</span></div>`).join("") +
-      (s.rnd === 4 && done ? `<div class="br-champ">🏆 ${teamName(ts[0][0])}</div>` : "") + `</div>`;
+      (s.rnd === 4 && done ? `<div class="br-champ">Champion: ${teamName(ts[0][0])}</div>` : "") + `</div>`;
   }
   function renderBracket() {
     const seasons = Array.from(new Set(FM.games.filter((g) => g.type === "P" && g.hPts != null)
@@ -2427,7 +2430,7 @@
       return `<div class="br-series ${s.r === 4 ? "final" : ""}">
         <div class="br-t ${fav ? "won" : "lost"}">${tmono(s.hi)} ${s.hi}<span class="wn">${Math.round(pHi * 100)}%</span></div>
         <div class="br-t ${fav ? "lost" : "won"}">${tmono(s.lo)} ${s.lo}<span class="wn">${Math.round((1 - pHi) * 100)}%</span></div>
-        ${s.r === 4 ? `<div class="br-champ">🏆 ${teamName(pred.champ)}${pred.pChamp != null ? ` · ${(pred.pChamp * 100).toFixed(0)}% title odds` : ""}</div>` : ""}
+        ${s.r === 4 ? `<div class="br-champ">Projected champion: ${teamName(pred.champ)}${pred.pChamp != null ? ` · ${(pred.pChamp * 100).toFixed(0)}% title odds` : ""}</div>` : ""}
       </div>`;
     };
     const col = (rnd, cf) => pred.rounds.filter((s) => s.r === rnd && (rnd === 4 || s.conf === cf));
@@ -2536,49 +2539,103 @@
       </div>`;
   }
 
+  /* ---- Draft ------------------------------------------------------------------ */
+  let drInit = false;
+  const DR = () => (D.draft && D.draft.picks) || [];
+  const drFmt = (v) => (v == null ? "—" : (v > 0 ? "+" : "") + v.toFixed(1));
+  function renderDraft() {
+    if (!D.draft) { $("#view-draft .note").textContent = "Draft data not available in this build."; return; }
+    if (!drInit) {
+      drInit = true;
+      const years = Array.from(new Set(DR().map((p) => p.year))).sort((a, b) => b - a);
+      $("#dr-year").innerHTML = years.map((y) => `<option value="${y}">${y}</option>`).join("");
+      $("#dr-year").value = String(years.find((y) => y <= D.draft.lastObserved - 1) || years[0]);
+      const asc = years.slice().sort((a, b) => a - b);
+      $("#dr-from").innerHTML = asc.map((y) => `<option value="${y}">${y}</option>`).join("");
+      $("#dr-to").innerHTML = asc.map((y) => `<option value="${y}">${y}</option>`).join("");
+      const gms = Array.from(new Set(DR().map((p) => p.gm).filter(Boolean))).sort();
+      $("#dr-gm").innerHTML = `<option value="">All</option>` + gms.map((g) => `<option>${g}</option>`).join("");
+      drPreset("complete");
+      ["#dr-year"].forEach((s) => $(s).addEventListener("change", drawDraftClass));
+      ["#dr-from", "#dr-to", "#dr-group", "#dr-gm", "#dr-proj"].forEach((s) => $(s).addEventListener("change", drawDraftRank));
+      $$("#view-draft [data-preset]").forEach((b) => b.addEventListener("click", () => { drPreset(b.dataset.preset); drawDraftRank(); }));
+    }
+    drawDraftClass(); drawDraftRank();
+  }
+  function drPreset(k) {
+    const ys = DR().map((p) => p.year), lo = Math.max(2014, Math.min(...ys)), hi = Math.max(...ys);
+    const lastComplete = D.draft.lastObserved - D.draft.window;
+    if (k === "recent") { $("#dr-from").value = 2019; $("#dr-to").value = hi - 1; $("#dr-proj").checked = true; }
+    if (k === "complete") { $("#dr-from").value = lo; $("#dr-to").value = lastComplete; $("#dr-proj").checked = false; }
+    if (k === "all") { $("#dr-from").value = lo; $("#dr-to").value = hi - 1; $("#dr-proj").checked = true; }
+  }
+  function drawDraftClass() {
+    const y = +$("#dr-year").value;
+    const rows = DR().filter((p) => p.year === y).sort((a, b) => a.pick - b.pick);
+    $("#dr-class thead").innerHTML = "<tr><th>Pick</th><th>Team</th><th class=\"col-text\">Player</th><th class=\"col-text\">GM</th>" +
+      "<th>Seasons</th><th>Value</th><th>Expected</th><th>Surplus</th><th>BOOKER now</th></tr>";
+    $("#dr-class tbody").innerHTML = rows.map((p) => {
+      const proj = p.projShare > 0 ? ` <i class="muted">proj</i>` : "";
+      const via = p.draftedBy ? ` <small class="muted">(via ${p.draftedBy})</small>` : "";
+      const cls = p.surplus > 0 ? "pos" : (p.surplus < 0 ? "neg" : "");
+      const name = p.pid ? `<a href="#" data-pid="${p.pid}">${p.player}</a>` : p.player;
+      return `<tr><td>${p.pick}</td><td>${p.team}${via}</td><td class="col-text">${name}</td><td class="col-text">${p.gm || "—"}</td>` +
+        `<td>${p.seasons}</td><td>${drFmt(p.value)}${proj}</td><td>${p.expected.toFixed(1)}</td><td class="${cls}"><b>${drFmt(p.surplus)}</b></td>` +
+        `<td>${p.currentBooker == null ? "—" : signed(p.currentBooker, 1)}</td></tr>`;
+    }).join("");
+    $$("#dr-class a[data-pid]").forEach((a) => a.addEventListener("click", (e) => { e.preventDefault(); openPlayer(+a.dataset.pid); }));
+  }
+  function drawDraftRank() {
+    const lo = +$("#dr-from").value, hi = +$("#dr-to").value, by = $("#dr-group").value, gm = $("#dr-gm").value;
+    const useProj = $("#dr-proj").checked;
+    const pool = DR().filter((p) => p.year >= lo && p.year <= hi && (useProj || p.complete) && (!gm || p.gm === gm));
+    const groups = {};
+    pool.forEach((p) => {
+      const k = by === "gm" ? (p.gm || "Unknown") : p.team;
+      const g = groups[k] || (groups[k] = { k, n: 0, sur: 0, val: 0, best: null, worst: null, teams: new Set(), gms: new Set() });
+      g.n++; g.sur += p.surplus; g.val += p.value; g.teams.add(p.team); if (p.gm) g.gms.add(p.gm);
+      if (!g.best || p.surplus > g.best.surplus) g.best = p;
+      if (!g.worst || p.surplus < g.worst.surplus) g.worst = p;
+    });
+    const rows = Object.values(groups).filter((g) => g.n >= (by === "gm" ? 4 : 1)).sort((a, b) => b.sur - a.sur);
+    const pk = (p) => `${p.player} <small class="muted">${p.year} #${p.pick}, ${drFmt(p.surplus)}</small>`;
+    $("#dr-rank thead").innerHTML = `<tr><th>#</th><th class="col-text">${by === "gm" ? "GM" : "Team"}</th>` +
+      `<th class="col-text">${by === "gm" ? "Teams" : "GMs"}</th><th>Picks</th><th>Total surplus</th><th>Per pick</th>` +
+      `<th class="col-text">Best pick</th><th class="col-text">Worst pick</th></tr>`;
+    $("#dr-rank tbody").innerHTML = rows.map((g, i) => {
+      const cls = g.sur > 0 ? "pos" : "neg";
+      const other = Array.from(by === "gm" ? g.teams : g.gms).join(", ");
+      return `<tr><td>${i + 1}</td><td class="col-text"><b>${g.k}</b></td><td class="col-text"><small>${other}</small></td>` +
+        `<td>${g.n}</td><td class="${cls}"><b>${drFmt(g.sur)}</b></td><td>${drFmt(g.sur / g.n)}</td>` +
+        `<td class="col-text">${pk(g.best)}</td><td class="col-text">${pk(g.worst)}</td></tr>`;
+    }).join("") || `<tr><td colspan="8">No picks in this range.</td></tr>`;
+  }
+
   /* ---- More ------------------------------------------------------------------ */
   const MORE_ITEMS = [
-    ["forecast", "\ud83d\udcc8", "Win Forecast", "Preseason sims, in-season trajectory, backtests"],
-    ["trade", "\ud83d\udd01", "Trade Machine", "Multi-asset trades with cap rules and GM verdict"],
-    ["lineup", "\ud83e\uddea", "Lineup Lab", "Build a rotation \u2192 projected wins and title odds"],
-    ["trajectory", "\ud83d\udcc9", "Trajectory", "Career arcs, form dots, projections, any skill"],
-    ["leaders", "\ud83c\udfc6", "Stat Leaders", "True-skill leaderboards, difficulty-adjusted"],
-    ["matchups", "\u2694\ufe0f", "Matchups", "Team vs team skill comparison"],
-    ["gameodds", "\ud83c\udfb2", "Game Odds", "Model vs market: log-loss, calibration, ROI"],
-    ["diagnostics", "\ud83e\ude7a", "Diagnostics", "Calibration and model health"],
-    ["method", "\ud83d\udcd6", "Methodology", "How BOOKER works, end to end"],
+    ["forecast", "Win Forecast", "Preseason sims, in-season trajectory, backtests"],
+    ["trade", "Trade Machine", "Multi-asset trades with cap rules and GM verdict"],
+    ["lineup", "Lineup Lab", "Build a rotation, see projected wins and title odds"],
+    ["trajectory", "Trajectory", "Career arcs, form dots, projections, any skill"],
+    ["leaders", "True-Skill Leaders", "Difficulty-adjusted skill leaderboards, incl. projections"],
+    ["draft", "Draft", "Draft classes and team / GM drafting skill"],
+    ["matchups", "Matchups", "Team vs team skill comparison"],
+    ["gameodds", "Game Odds", "Model vs market: log-loss, calibration, ROI"],
+    ["diagnostics", "Diagnostics", "Calibration and model health"],
+    ["method", "Methodology", "How BOOKER works, end to end"],
   ];
   function renderMore() {
     if ($("#fm-more").childElementCount) return;
-    $("#fm-more").innerHTML = MORE_ITEMS.map(([v, ico, t, d]) =>
-      `<button class="more-item" data-view="${v}"><span class="ico">${ico}</span><span><b>${t}</b><small>${d}</small></span></button>`).join("");
+    $("#fm-more").innerHTML = MORE_ITEMS.map(([v, t, d]) =>
+      `<button class="more-item" data-view="${v}"><b>${t}</b><small>${d}</small></button>`).join("");
   }
   $("#fm-more").addEventListener("click", (e) => {
     const b = e.target.closest(".more-item"); if (b) routeView(b.dataset.view);
   });
 
-  /* ---- creme mode (light theme = the almanac palette) ------------------------- */
-  function applyTheme(t) {
-    document.body.classList.toggle("creme", t === "creme");
-    Chart.defaults.color = t === "creme" ? "#6f6a5c" : "#8b96a2";
-    $("#theme-toggle").textContent = t === "creme" ? "🌙" : "☀️";
-    try { localStorage.setItem("booker-theme", t); } catch (e) { /* private mode */ }
-  }
-  $("#theme-toggle").addEventListener("click", () => {
-    const t = document.body.classList.contains("creme") ? "dark" : "creme";
-    applyTheme(t);
-    // re-render the current routed view so charts pick up the new palette;
-    // detail views (player/match/team) recolor on next open instead.
-    const cur = $$(".view").find((v) => !v.hidden);
-    const name = cur ? cur.id.replace("view-", "") : "matches";
-    if (!["player", "match", "team"].includes(name)) {
-      Object.keys(charts).forEach(destroy);
-      routeView(name);
-    }
-  });
-  let _theme0 = "dark";
-  try { _theme0 = localStorage.getItem("booker-theme") || "dark"; } catch (e) { /* ok */ }
-  applyTheme(_theme0);
+  /* ---- single cream theme ------------------------------------------------------ */
+  document.body.classList.add("creme");
+  Chart.defaults.color = "#6f6a5c";
 
   /* ---- app-bar global player search ------------------------------------------- */
   $("#ab-search").addEventListener("change", () => {

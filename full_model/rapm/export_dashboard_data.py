@@ -438,6 +438,10 @@ MASTER = HERE.parent / "nba_master_dataset_with_archetypes.csv"
 SKILL_DEFS = [
     ("offense", "Offense", "model", "bfOff100", None, "num"),
     ("defense", "Defense", "model", "bfDef100", None, "num"),
+    # lineup-adjusted defense split (forecast/def_zones.py): pts/100 suppressed; the two
+    # plus a small pace remainder sum to the model's defensive rating
+    ("def_interior", "Interior D", "dz", "def_interior", None, "num"),
+    ("def_perimeter", "Perimeter D", "dz", "def_perimeter", None, "num"),
     ("three_pct", "True 3P%", "shotq", "true_3p", "raw_3p", "pct"),
     ("adj_three", "Adj 3P% (shot diet)", "shotdiff", "d3p_adj", "raw_3p", "pct"),
     ("rim_finish", "True Rim FG%", "shotq", "true_rim", "raw_rim", "pct"),
@@ -554,6 +558,13 @@ def build_skill_profiles(players):
         for r in sdf.itertuples():
             shotd[(int(r.PLAYER_ID), int(r.season))] = {c: getattr(r, c, None) for c in sdcols}
 
+    dzone = {}
+    dzpath = CACHE / "def_zones.csv"
+    if dzpath.exists():
+        for r in pd.read_csv(dzpath).itertuples():
+            dzone[(int(r.PLAYER_ID), int(r.season))] = {"def_interior": r.def_interior,
+                                                        "def_perimeter": r.def_perimeter}
+
     def _bkey(p):
         return (pi.norm_name(p["player"]), p["season"])
 
@@ -578,6 +589,8 @@ def build_skill_profiles(players):
                     v = d.get(col); rv = d.get(raw_col) if raw_col else None
                 elif source == "shotd":
                     v = shotd.get((p["pid"], p["season"]), {}).get(col)
+                elif source == "dz":
+                    v = dzone.get((p["pid"], p["season"]), {}).get(col)
                 else:
                     b = box.get(_bkey(p))
                     v = b.get(col) if b is not None else None
@@ -596,6 +609,158 @@ def build_skill_profiles(players):
                     entry["raw"] = round(raws[j], 3)
                 pool[i].setdefault("skills", {})[key] = entry
     return players
+
+
+def project_skill_profiles(players, age_of):
+    """Give the forward (predictive) rows a projected `skills` profile so the True-Skill
+    Leaders board and comparisons work for 2027-29.
+
+    Per skill, fit on every historical consecutive pair (s, s+1):
+        v_{s+1} = a + b * v_s + c * (age-27) + d * (age-27)^2
+    (b < 1 = regression to the mean; c, d = that skill's own aging) and iterate it from
+    the player's latest observed season to the target season. Model skills (offense /
+    defense) take the forward row's own projected bfOff100/bfDef100. Percentiles are
+    re-ranked within each forward season, same orientation as the observed seasons."""
+    hist = {}
+    for p in players:
+        if not p.get("predictive") and p.get("skills"):
+            hist.setdefault(p["pid"], {})[p["season"]] = p
+    coefs = {}
+    for key, label, source, col, raw_col, fmt, *rest in SKILL_DEFS:
+        if source == "model":
+            continue
+        X, y = [], []
+        for pid, ss in hist.items():
+            for s, p in ss.items():
+                q = ss.get(s + 1)
+                if q is None or key not in p["skills"] or key not in q["skills"]:
+                    continue
+                a = age_of(p)
+                if a is None:
+                    continue
+                d = a - 27.0
+                X.append([1.0, p["skills"][key]["val"], d, d * d]); y.append(q["skills"][key]["val"])
+        if len(y) >= 200:
+            coefs[key] = np.linalg.lstsq(np.array(X), np.array(y), rcond=None)[0]
+    fwd = [p for p in players if p.get("predictive")]
+    for p in fwd:
+        ss = hist.get(p["pid"])
+        if not ss:
+            continue
+        src = ss[max(ss)]
+        a0 = age_of(src)
+        h = p["season"] - src["season"]
+        sk = {}
+        for key, label, source, col, raw_col, fmt, *rest in SKILL_DEFS:
+            if source == "model":
+                v = p.get(col)
+            else:
+                if key not in src["skills"] or key not in coefs or a0 is None:
+                    continue
+                v, a = src["skills"][key]["val"], a0
+                for _ in range(h):
+                    d = a - 27.0
+                    v = float(coefs[key] @ np.array([1.0, v, d, d * d])); a += 1
+            if v is None:
+                continue
+            sk[key] = {"label": label, "val": round(float(v), 3), "fmt": fmt, "proj": True}
+        if sk:
+            p["skills"] = sk
+    by_season = {}
+    for p in fwd:
+        if p.get("skills"):
+            by_season.setdefault(p["season"], []).append(p)
+    for season, rows in by_season.items():
+        pool = [p for p in rows if p.get("min", 0) >= SKILL_MIN_MINUTES] or rows
+        for key, label, source, col, raw_col, fmt, *rest in SKILL_DEFS:
+            sign = rest[0] if rest else 1
+            have = [p for p in pool if key in p["skills"]]
+            if not have:
+                continue
+            pcts = _percentiles([sign * p["skills"][key]["val"] for p in have])
+            for p, pc in zip(have, pcts):
+                p["skills"][key]["pct"] = round(float(pc))
+        for p in rows:                       # below the minutes floor: drop un-ranked skills
+            p["skills"] = {k: v for k, v in p["skills"].items() if "pct" in v}
+    print(f"projected skill profiles: {sum(1 for p in fwd if p.get('skills'))} forward player-seasons, "
+          f"{len(coefs)} skills with fitted carry/aging models")
+    return players
+
+
+DRAFT_WINDOW = 4          # seasons after the draft: the rookie-scale window
+DRAFT_REPL = 2.5          # replacement level, pts/100 below average (wins-above-replacement)
+
+
+def build_draft(players, kpm, last_obs=2026):
+    """Draft classes with value over expected-by-slot, for the Draft pages.
+
+    value    = wins above replacement in seasons draft+1 .. draft+4 (WAA plus replacement
+               credit for minutes played: waa + DRAFT_REPL * kpm * minutes); a season with no
+               NBA row counts as 0. Seasons after `last_obs` use BOOKER's forward projections
+               (flagged in `projShare`).
+    expected = smooth slot curve a + b*exp(-c*pick) fit on classes whose window is fully
+               observed (2014 .. last_obs-4). surplus = value - expected.
+    gm       = top executive in office for the drafting team on draft night (June 25).
+    team     = the team he debuted with when that differs from the drafting team (draft-night
+               trades; `draftedBy` keeps the original), so credit follows the decision."""
+    from scipy.optimize import curve_fit
+    from forecast import player_impacts as pi
+    dp, ep = CACHE / "draft_history.csv", CACHE / "team_execs.csv"
+    if not dp.exists():
+        return None
+    dh = pd.read_csv(dp)
+    ex = pd.read_csv(ep) if ep.exists() else pd.DataFrame(columns=["team", "exec", "start", "end"])
+    ex["end"] = ex.end.replace("present", "2099-12-31")
+    rows_by = {}
+    name2pid = {}
+    for r in players:
+        rows_by.setdefault(r["pid"], {})[r["season"]] = r
+        name2pid.setdefault(pi.norm_name(r["player"]), r["pid"])
+    out = []
+    for d in dh.itertuples():
+        pid = name2pid.get(pi.norm_name(d.player))
+        seasons = range(d.draft_year + 1, d.draft_year + 1 + DRAFT_WINDOW)
+        val = proj = 0.0
+        played = 0
+        for s in seasons:
+            r = rows_by.get(pid, {}).get(s) if pid is not None else None
+            if r is None or r.get("waa") is None:
+                continue
+            w = float(r["waa"]) + DRAFT_REPL * kpm * float(r.get("min") or 0)
+            val += w; played += 1
+            if s > last_obs:
+                proj += w
+        cur = None
+        if pid is not None and rows_by.get(pid):
+            obs = [s for s in rows_by[pid] if s <= last_obs]
+            if obs:
+                cur = rows_by[pid][max(obs)].get("bookerScore")
+        # draft-night trades: credit the team he debuted with (first season's team) when it
+        # differs from the drafting team (Doncic: drafted by ATL, debuted for DAL)
+        team, via = d.team, None
+        first = rows_by.get(pid, {}).get(d.draft_year + 1) if pid is not None else None
+        if first is not None and first.get("team") not in (None, "?", d.team):
+            team, via = first["team"], d.team
+        date = f"{d.draft_year}-06-25"
+        g = ex[(ex.team == team) & (ex.start <= date) & (ex.end >= date)]
+        out.append({"year": int(d.draft_year), "pick": int(d.pick), "team": team, "draftedBy": via, "player": d.player,
+                    "pid": pid, "value": round(val, 2), "seasons": played,
+                    "projShare": round(proj / val, 2) if val > 0 else (1.0 if d.draft_year + DRAFT_WINDOW > last_obs else 0.0),
+                    "complete": bool(d.draft_year >= 2014 and d.draft_year + DRAFT_WINDOW <= last_obs),
+                    "gm": g.exec.iloc[-1] if len(g) else None, "currentBooker": cur,
+                    "college": d.college if isinstance(d.college, str) else None})
+    D = pd.DataFrame(out)
+    fit = D[D.complete]
+    curve = lambda x, a, b, c: a + b * np.exp(-c * x)
+    (a, b, c), _ = curve_fit(curve, fit.pick.values, fit.value.values, p0=[0.5, 8.0, 0.1], maxfev=20000)
+    D["expected"] = curve(D.pick.values, a, b, c).round(2)
+    D["surplus"] = (D.value - D.expected).round(2)
+    print(f"draft: {len(D)} picks {D.year.min()}-{D.year.max()}, slot curve {a:.2f} + {b:.2f}*exp(-{c:.3f}*pick) "
+          f"(#1 {curve(1, a, b, c):.1f} WAR, #30 {curve(30, a, b, c):.1f}, #60 {curve(60, a, b, c):.1f}); "
+          f"mapped {D.pid.notna().mean():.0%} to player ids")
+    D = D.replace({np.nan: None})
+    return {"picks": D.to_dict("records"), "window": DRAFT_WINDOW, "lastObserved": last_obs,
+            "curve": [round(float(a), 3), round(float(b), 3), round(float(c), 4)]}
 
 
 def build_diagnostics(players):
@@ -1090,7 +1255,11 @@ def main():
             row["rankModel"] = i
 
     build_skill_profiles(players)            # savant-style percentile bars
+    project_skill_profiles(                  # forward rows: projected skills (leaders board)
+        players, lambda p: (p.get("age") if p.get("age") is not None
+                            else age_map.get((cv.norm_name(p["player"]), p["season"]))))
     diagnostics = build_diagnostics(players)  # Bayesian calibration + True Value fit
+    draft = build_draft(players, kpm)        # draft classes + value over slot (Draft pages)
 
     bt = pd.read_csv(HERE / "waa_backtest_team_predictions.csv")
     team_pred = [{
@@ -1139,6 +1308,7 @@ def main():
         "predBracket": pred_bracket,
         "forecastSeasons": forecast_seasons,
         "trade": trade,
+        "draft": draft,
         "diagnostics": diagnostics,
         "generated": pd.Timestamp.utcnow().strftime("%Y-%m-%d"),
     }

@@ -9,19 +9,19 @@
 <body>
 <header class="appbar">
   <div class="appbar-inner">
-    <span class="ab-logo"><span class="dot">B</span> BOOKER</span>
+    <span class="ab-logo">BOOKER</span>
     <div class="ab-search">
       <input id="ab-search" list="cmp-datalist" type="search" placeholder="Search players…" autocomplete="off" />
     </div>
-    <button id="theme-toggle" class="theme-btn" title="Toggle creme mode">☀️</button>
   </div>
 </header>
 <nav class="tabs" id="tabs">
-  <button class="tab is-active" data-view="matches"><span class="ico">🏀</span>Matches</button>
-  <button class="tab" data-view="standings"><span class="ico">📊</span>Table</button>
-  <button class="tab" data-view="leaderboard"><span class="ico">⭐</span>Players</button>
-  <button class="tab" data-view="teams"><span class="ico">🛡️</span>Teams</button>
-  <button class="tab" data-view="more"><span class="ico">☰</span>More</button>
+  <button class="tab is-active" data-view="matches">Matches</button>
+  <button class="tab" data-view="standings">Table</button>
+  <button class="tab" data-view="leaderboard">Players</button>
+  <button class="tab" data-view="teams">Teams</button>
+  <button class="tab" data-view="draft">Draft</button>
+  <button class="tab" data-view="more">More</button>
 </nav>
 
 <main class="wrap">
@@ -313,6 +313,30 @@
       <h3 class="panel-title">Decision read <span class="panel-hint">projected value over the window</span></h3>
       <div id="tj-verdict"></div>
     </div>
+  </section>
+
+  <!-- DRAFT ------------------------------------------------------------ -->
+  <section id="view-draft" class="view" hidden>
+    <h2 class="page-head">Draft</h2>
+    <p class="note">Value = wins above replacement in a pick's first four NBA seasons (BOOKER). Surplus =
+      value minus what that slot typically produces. Credit goes to the team the player debuted with
+      (draft-night trades followed) and to the executive in charge on draft night. Recent classes
+      finish their four-year window with BOOKER projections, marked <i>proj</i>.</p>
+    <h3 class="sub-head">Draft classes</h3>
+    <div class="controls"><label>Class <select id="dr-year"></select></label></div>
+    <div class="table-scroll"><table class="grid" id="dr-class"><thead></thead><tbody></tbody></table></div>
+    <h3 class="sub-head">Drafting skill</h3>
+    <div class="controls">
+      <label>From <select id="dr-from"></select></label>
+      <label>To <select id="dr-to"></select></label>
+      <label>Group by <select id="dr-group"><option value="team">Team</option><option value="gm">GM</option></select></label>
+      <label>GM <select id="dr-gm"><option value="">All</option></select></label>
+      <label><input type="checkbox" id="dr-proj" /> include projected windows</label>
+      <span class="presets"><button class="link-btn" data-preset="recent">Recent (2019+)</button>
+        <button class="link-btn" data-preset="complete">Completed windows</button>
+        <button class="link-btn" data-preset="all">All</button></span>
+    </div>
+    <div class="table-scroll"><table class="grid" id="dr-rank"><thead></thead><tbody></tbody></table></div>
   </section>
 
   <!-- STAT LEADERS ----------------------------------------------------- -->
