@@ -105,6 +105,22 @@ def ratings_through(season, rat=None):
         c = pd.read_csv(cp)
         c = c[(c.season == season) & ~c.PLAYER_ID.isin(r.PLAYER_ID)]
         r = pd.concat([r, c], ignore_index=True)
+    # SHORT seasons (audit finding): the ratings table keeps only >=250-min target seasons, so
+    # a star with a 5-game season (Curry 2019-20, Kawhi 2017-18) had no row through `season`
+    # and entered season+1 at replacement level. Fall back to his latest row from the two
+    # prior seasons (>=500 min), sd inflated x1.25 like the lost-season carry. The decayed
+    # multi-season fit means the few skipped minutes would barely move the rating.
+    full = pd.read_csv(RAPM / "booker_bookerformer_ratings.csv") if rat is None else rat
+    fb = full[full.season.isin([season - 1, season - 2]) & (full.minutes >= 500)
+              & ~full.PLAYER_ID.isin(r.PLAYER_ID)]
+    if len(fb):
+        fb = fb.sort_values("season").drop_duplicates("PLAYER_ID", keep="last").copy()
+        for c_ in ("sd_off", "sd_def"):
+            if c_ in fb:
+                fb[c_] = fb[c_] * 1.25
+        fb["carried_from"] = fb.season
+        fb["season"] = season
+        r = pd.concat([r, fb], ignore_index=True)
     return r
 
 

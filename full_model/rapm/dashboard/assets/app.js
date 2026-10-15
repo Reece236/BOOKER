@@ -862,7 +862,8 @@
     $("#go-lede").textContent = hasMkt
       ? "Lookback basis: the model knows who suited up each night (books knew the inactive list at tip) " +
         "and weights them by projected minutes share, never the minutes they actually played. " +
-        "Scored against the closing moneyline, vig removed, on the same games."
+        "Scored against the closing line, vig removed, on the same games (2023-24 and 2024-25: consensus " +
+        "closing spread converted to a win probability; validated within .0004 log-loss of the moneyline on 2022-23)."
       : "Pre-tip win probabilities vs outcomes; market lines unavailable for recent seasons.";
     const cards = [
       ["Model log-loss", fmt(pooled.modelLogloss, 4), "lower is better"],

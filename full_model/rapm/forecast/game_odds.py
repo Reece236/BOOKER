@@ -238,6 +238,16 @@ def attach_market(df, season):
                  on=["date", "home", "away"], how="left")
     m = m.rename(columns={"P_HOME": "market_p_home", "ML_HOME": "ml_home",
                           "ML_AWAY": "ml_away"})
+    # spread-derived seasons (2023-24, 2024-25: ESPN kept pregame spreads, not moneylines) get
+    # a SYNTHETIC price for ROI: fair prob grossed up by a typical 4% two-way overround
+    # (measured 2.8-4.2% on our real moneyline seasons) -- conservative vs Pinnacle.
+    miss = m.ml_home.isna() & m.market_p_home.notna()
+    if miss.any():
+        def am(q):
+            q = np.clip(q, 0.01, 0.99)
+            return np.where(q >= 0.5, -100 * q / (1 - q), 100 * (1 - q) / q)
+        m.loc[miss, "ml_home"] = am(m.loc[miss, "market_p_home"] * 1.04)
+        m.loc[miss, "ml_away"] = am((1 - m.loc[miss, "market_p_home"]) * 1.04)
     return m
 
 

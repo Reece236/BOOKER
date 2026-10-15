@@ -94,15 +94,30 @@ def season_presence(tgs):
     return tp, pl
 
 
-def opening_roster(tgs, n=OPEN_GAMES):
-    """{team: [pids]} -- players appearing in the team's first n games."""
+def opening_roster(tgs, tgs_prev=None, n=OPEN_GAMES):
+    """{team: [pids]} -- the roster a preseason forecaster knows (historical analogue of the
+    live ESPN roster, injured players included):
+      * everyone who plays in the team's FIRST game, plus
+      * returners: last appearance in s-1 was for this team AND first appearance in s is
+        for this team (injured-at-opener players stay; they were under contract).
+    The old rule (anyone in the first 10 games) leaked early-season trades and pickups
+    (audit finding). `tgs_prev=None` falls back to the old first-n rule."""
     g = tgs[["GAME_ID", "DATE", "team"]].drop_duplicates().sort_values(["team", "DATE", "GAME_ID"])
     g["k"] = g.groupby("team").cumcount()
-    early = set(map(tuple, g[g.k < n][["GAME_ID", "team"]].values))
+    k_open = 1 if tgs_prev is not None else n
+    early = set(map(tuple, g[g.k < k_open][["GAME_ID", "team"]].values))
     e = tgs[[(gid, t) in early for gid, t in zip(tgs.GAME_ID, tgs.team)]]
     e = e.groupby(["PLAYER_ID", "team"]).sec.sum().reset_index()
     e = e.sort_values("sec").drop_duplicates("PLAYER_ID", keep="last")   # early-trade: keep bigger
-    return e.groupby("team").PLAYER_ID.apply(list).to_dict()
+    ros = e.groupby("team").PLAYER_ID.apply(list).to_dict()
+    if tgs_prev is not None:
+        last_prev = tgs_prev.sort_values(["DATE", "GAME_ID"]).drop_duplicates("PLAYER_ID", keep="last").set_index("PLAYER_ID").team
+        first_cur = tgs.sort_values(["DATE", "GAME_ID"]).drop_duplicates("PLAYER_ID", keep="first").set_index("PLAYER_ID").team
+        have = {p for v in ros.values() for p in v}
+        for p, t in first_cur.items():
+            if p not in have and last_prev.get(p) == t:
+                ros.setdefault(t, []).append(int(p))
+    return ros
 
 
 # ------------------------------------------------------------------- features
@@ -158,7 +173,7 @@ def features(ctx, s, roster):
         return X
     # returning from a LOST season (no minutes last year, a real role the year before):
     # lets the model learn returners' workloads instead of reading them as fringe players
-    X["missed_prev"] = ((X.prev < 0.02) & (X.prev2 > 0.2)).astype(int)
+    X["missed_prev"] = ((X.prev < 0.10) & (X.prev2 > 0.2)).astype(int)   # lost OR short season
     X["rating_missing"] = X.rating.isna().astype(int)
     X["rating"] = X.rating.fillna(pi.PRIOR_BASE)
     a = unc.attach_attrs(X.rename(columns={"name": "player"})[["player", "season"]].assign(minutes=0))
@@ -196,7 +211,7 @@ def replacement_rating(ctx, seasons):
     for s in seasons:
         if s not in ctx.tgs:
             continue
-        ros = opening_roster(ctx.tgs[s])
+        ros = opening_roster(ctx.tgs[s], ctx.tgs.get(s - 1))
         r1 = pi.ratings_through(s - 1, ctx.rat).set_index("PLAYER_ID").impact_total
         tp = ctx.tp[s]
         for t, p, pres in zip(tp.team, tp.PLAYER_ID, tp.pres):
@@ -241,7 +256,7 @@ def build(write_live=True, verbose=True):
     obs = sorted(s for s in ctx.tgs if s - 1 in ctx.pl and (ctx.rat.season == s - 1).any())
     panel = {}
     for s in obs:
-        X = features(ctx, s, opening_roster(ctx.tgs[s]))
+        X = features(ctx, s, opening_roster(ctx.tgs[s], ctx.tgs.get(s - 1)))
         X["y"] = realized(ctx, s, X)
         panel[s] = X
     outs, evals = [], []

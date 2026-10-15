@@ -83,7 +83,8 @@ def stint_events(s, st, ab, home):
     e = e[e.oreb | e.tov].copy()
     e["off_home"] = [ab.get(int(t)) == home.get(int(g)) if t == t else False for t, g in zip(e.team, e.GAME_ID)]
     m = pd.merge_asof(e.sort_values("sec"), st[["GAME_ID", "PERIOD", "START_SEC", "sid"]].sort_values("START_SEC"),
-                      by=["GAME_ID", "PERIOD"], left_on="sec", right_on="START_SEC", direction="forward").dropna(subset=["sid"])
+                      by=["GAME_ID", "PERIOD"], left_on="sec", right_on="START_SEC", direction="forward",
+                      allow_exact_matches=False)   # event AT a sub clock belongs to the outgoing lineup.dropna(subset=["sid"])
     for side, h in (("home", True), ("away", False)):
         mm = m[m.off_home == h]
         st[f"{side}_tov"] = mm[mm.tov].groupby("sid").size().reindex(st.sid, fill_value=0).to_numpy(float)
@@ -106,7 +107,8 @@ def stint_zone_points(s):
     sh["sec"] = sh.MINUTES_REMAINING * 60.0 + sh.SECONDS_REMAINING
     sh = sh.sort_values("sec")
     m = pd.merge_asof(sh, st[["GAME_ID", "PERIOD", "START_SEC", "sid"]].sort_values("START_SEC"),
-                      by=["GAME_ID", "PERIOD"], left_on="sec", right_on="START_SEC", direction="forward")
+                      by=["GAME_ID", "PERIOD"], left_on="sec", right_on="START_SEC", direction="forward",
+                      allow_exact_matches=False)   # event AT a sub clock belongs to the outgoing lineup
     m = m.dropna(subset=["sid"])
     teams = pd.read_csv(CACHE / f"teams_{s}.csv")
     ab = dict(zip(teams.TEAM_ID.astype(int), teams.ABBR))

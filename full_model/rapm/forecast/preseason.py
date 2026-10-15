@@ -365,17 +365,31 @@ def main():
 
     _shrink_predictions(cache)
 
-    scale = 1.0
-    if ratings is not None:
-        base = _coverage(cache, ratings, 0.0)
-        scale = calibrate_net_scale(cache, ratings)
-        cov = _coverage(cache, ratings, scale)
-        print(f"team-band calibration: binomial-only coverage {100*base:.0f}% -> "
-              f"net_scale={scale:.3f} gives {100*cov:.0f}% (target {100*TARGET_COVERAGE:.0f}%)")
+    # WALK-FORWARD band calibration (audit finding: one global scale bisected on all seasons
+    # made "80% coverage" true by construction). Season s uses the scale fit on COMPLETED
+    # seasons < s; the first MIN_CAL completed seasons share the scale fit on themselves
+    # and are flagged band_in_sample=1 (excluded from the honest coverage figure).
+    MIN_CAL = 3
+    def _complete(s):
+        nets_, k_, c_, sched_, actual_ = cache[s]
+        return sum(v for v in actual_.values() if v is not None) >= 0.95 * len(sched_)
+    done = [s for s in sorted(cache) if _complete(s)]
+    scales, in_samp = {}, {}
+    if ratings is not None and len(done) >= MIN_CAL:
+        boot = calibrate_net_scale({s: cache[s] for s in done[:MIN_CAL]}, ratings)
+        for s in sorted(cache):
+            prior = [x for x in done if x < s]
+            if len(prior) < MIN_CAL:
+                scales[s], in_samp[s] = boot, 1
+            else:
+                scales[s], in_samp[s] = calibrate_net_scale({x: cache[x] for x in prior}, ratings), 0
+            print(f"  band scale {s}: {scales[s]:.3f}" + (" (in-sample bootstrap)" if in_samp[s] else
+                  f" (fit on {len(prior)} prior seasons)"))
 
     frames = []
     for s, (nets, k, c, sched, actual) in cache.items():
-        df = run_season(data, s, ratings=ratings, net_scale=scale, precomp=(nets, k, c))
+        df = run_season(data, s, ratings=ratings, net_scale=scales.get(s, 1.0), precomp=(nets, k, c))
+        df["band_in_sample"] = in_samp.get(s, 1)
         df.to_csv(CACHE / f"preseason_{s}.csv", index=False)
         have = df.actual_wins.notna()
         if have.any():
@@ -389,8 +403,10 @@ def main():
     allp.to_csv(CACHE / "preseason_all.csv", index=False)
     have = allp[allp.actual_wins.notna()]
     cov = float(((have.p10 <= have.actual_wins) & (have.actual_wins <= have.p90)).mean())
-    print(f"wrote preseason_all.csv ({len(allp)} team-seasons); "
-          f"pooled band coverage {100*cov:.0f}% over {len(have)} with actuals")
+    oos = have[have.band_in_sample == 0]
+    cov_oos = float(((oos.p10 <= oos.actual_wins) & (oos.actual_wins <= oos.p90)).mean()) if len(oos) else float("nan")
+    print(f"wrote preseason_all.csv ({len(allp)} team-seasons); band coverage: pooled "
+          f"{100*cov:.0f}% over {len(have)}, WALK-FORWARD {100*cov_oos:.0f}% over {len(oos)} (target 80%)")
 
 
 if __name__ == "__main__":

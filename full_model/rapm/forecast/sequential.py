@@ -59,6 +59,7 @@ AVAIL = 0.85       # typical availability: projected (unconditional) share / AVA
 # with weight c^ALPHA (c = share when playing). ALPHA < 1 -> the deeper bench absorbs
 # relatively more; a same-position term fit to zero. Test presence RMSE .1352 -> .1315.
 ALPHA = 0.4
+ROT_MIN = 0.12     # actives mode: min share-when-playing (~6 min/g) to count as an active
 
 
 def avail_features(streak, c):
@@ -238,12 +239,20 @@ def run_season(data, s, rat, proj, repl, verbose=True, avail_model=None, injury_
                 row[f"net_{side}_pregame"] = team_net(redistribute(shc, pav), m)
                 act = gpres.get((gid, team))
                 if act:
-                    cond = {p: shc.get(p, 0.0) for p in set(shc) | set(act)}
+                    # ACTIVES = rotation players who suited up. Only players with a real
+                    # role (share-when-playing >= ROT_MIN) count, so who got garbage-time /
+                    # coach's-decision minutes -- in-game information correlated with the
+                    # margin (audit: actives count r=.57 with |margin|) -- carries no signal.
+                    # A player traded in keeps his share-when-playing from his old team.
+                    cond = dict(shc)
                     for p in act:
-                        if cond[p] <= 0:
-                            cond[p] = 0.1          # unseen player: small role
-                    row[f"net_{side}_actives"] = team_net(
-                        redistribute(cond, {p: 1.0 for p in act}), m)
+                        if cond.get(p, 0.0) <= 0:
+                            old_t = member.get(p)
+                            cond[p] = (shares(old_t, conditional=True).get(p, 0.0)
+                                       if old_t and old_t != team else 0.0)
+                    on = {p: float(p in act and cond.get(p, 0.0) >= ROT_MIN) for p in cond}
+                    row[f"net_{side}_actives"] = team_net(redistribute(
+                        {p: c_ for p, c_ in cond.items() if c_ > 0}, on), m)
                 else:
                     row[f"net_{side}_actives"] = np.nan
                 for p, x in sh.items():

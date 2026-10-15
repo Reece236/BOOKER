@@ -62,8 +62,7 @@ _MASTER_CACHE = {}
 
 
 def _master_attrs():
-    """{norm_name: (ref_season, age, position, usage)} newest-season reference row,
-    for carry-forward. Master ends ~2025; older/newer target seasons extrapolate age."""
+    """{norm_name: [(season, age, position, usage), ...]} sorted by season (end-year)."""
     if "attrs" in _MASTER_CACHE:
         return _MASTER_CACHE["attrs"]
     attrs = {}
@@ -72,27 +71,33 @@ def _master_attrs():
                                          "position", "usagePercent"])
         m["nm"] = m.playerName.map(pi.norm_name)
         m["season"] = pd.to_numeric(m.season, errors="coerce")
-        m = m.dropna(subset=["season"]).sort_values("season")
+        m = m.dropna(subset=["season"]).sort_values("season").drop_duplicates(["nm", "season"], keep="first")
         for r in m.itertuples():
-            attrs[r.nm] = (int(r.season), r.age, r.position, r.usagePercent)  # last wins = newest
+            attrs.setdefault(r.nm, []).append((int(r.season), r.age, r.position, r.usagePercent))
     _MASTER_CACHE["attrs"] = attrs
     return attrs
 
 
 def attach_attrs(df):
-    """Add age/position/usage columns to a ratings frame (needs `player`,`season`),
-    carrying the newest master row forward and aging players by the season gap."""
+    """Add age/position/usage columns to a ratings frame (needs `player`,`season`).
+    Age/position may extrapolate from any master row (not informative about the future),
+    but USAGE comes only from the latest master season <= the row's season: carrying a
+    player's newest usage back to old rows leaked future role into PROJ features
+    (audit finding). Rows earlier than a player's first master season get usage NaN."""
     attrs = _master_attrs()
     ages, poss, uses = [], [], []
     for nm, s in zip(df.player.map(pi.norm_name), df.season):
-        a = attrs.get(nm)
-        if a is None:
+        rows = attrs.get(nm)
+        if not rows:
             ages.append(np.nan); poss.append("SF"); uses.append(np.nan)
-        else:
-            ref_s, age, pos, use = a
-            ages.append((age + (int(s) - ref_s)) if pd.notna(age) else np.nan)
-            poss.append(pos if isinstance(pos, str) else "SF")
-            uses.append(use)
+            continue
+        s = int(s)
+        past = [r for r in rows if r[0] <= s]
+        ref = past[-1] if past else rows[0]
+        ref_s, age, pos, _ = ref
+        ages.append((age + (s - ref_s)) if pd.notna(age) else np.nan)
+        poss.append(pos if isinstance(pos, str) else "SF")
+        uses.append(past[-1][3] if past else np.nan)
     out = df.copy()
     out["age"] = np.array(ages, dtype=float)
     out["position"] = poss
