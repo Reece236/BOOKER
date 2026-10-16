@@ -187,8 +187,9 @@ def season_margins(data, season, prior_override=None):
     return pd.DataFrame(rows)
 
 
-def season_margins_seq(data, season):
-    """Pre-game margins from the sequential filter (cache/seq_games_{season}.csv)."""
+def season_margins_seq(data, season, future=False):
+    """Pre-game margins from the sequential filter (cache/seq_games_{season}.csv).
+    future=True returns only UNPLAYED games (home_win NaN) for publishing forward odds."""
     p = CACHE / f"seq_games_{season}.csv"
     if not p.exists() or season not in data.GAMES:
         return None
@@ -206,7 +207,7 @@ def season_margins_seq(data, season):
         rh, ra = _rest(last_played.get(r.HOME), d), _rest(last_played.get(r.AWAY), d)
         last_played[r.HOME] = d; last_played[r.AWAY] = d
         gid = int(r.GAME_ID)
-        if gid not in seq.index or pd.isna(r.HOME_WIN):
+        if gid not in seq.index or (pd.isna(r.HOME_WIN) != future):
             continue
         q = seq.loc[gid]
         hf, af = form.get(gid, (0.0, 0.0))
@@ -219,7 +220,7 @@ def season_margins_seq(data, season):
             "margin_act": q.net_home_actives - q.net_away_actives,
             "motiv_diff": (motiv.get(gid, {}).get("away", {}).get("low_motiv", 0)
                            - motiv.get(gid, {}).get("home", {}).get("low_motiv", 0)),
-            "home_win": int(r.HOME_WIN), "formEW": hf - af,
+            "home_win": (np.nan if future else int(r.HOME_WIN)), "formEW": hf - af,
             "rest_diff": rh - ra, "b2b_home": int(rh == 1), "b2b_away": int(ra == 1),
         })
     return pd.DataFrame(rows)
@@ -398,6 +399,23 @@ def main():
           f"games model {mll_m:.4f} vs market {kll:.4f}" if len(mk)
           else f"pooled: model logloss {pll:.4f}, acc {pac:.3f}")
     print("wrote game_predictions_*.csv, game_metrics.csv, game_calibration.csv")
+
+    # FORWARD odds for unplayed games (e.g. 2027): same calibrated pre-game model, fit on
+    # every completed season (the export used to fall back to Phi(dnet/13.3) here)
+    wp_all = fit_winprob(allg)
+    for s in range(2018, 2029):
+        if s not in data.GAMES or not (CACHE / f"seq_games_{s}.csv").exists():
+            continue
+        fut = season_margins_seq(data, s, future=True)
+        if fut is None or fut.empty:
+            continue
+        fut["model_p_home"] = fut["model_p_home_pregame"] = wp_all.predict_proba(fut[FEATS].values)[:, 1]
+        fut["prob_basis"], fut["market_p_home"] = "pregame", np.nan
+        p_ = CACHE / f"game_predictions_{s}.csv"
+        if p_.exists() and s in set(allg.season):
+            fut = pd.concat([pd.read_csv(p_), fut], ignore_index=True)
+        fut.to_csv(p_, index=False)
+        print(f"forward odds: {int(fut.home_win.isna().sum())} unplayed {s} games -> {p_.name}")
 
 
 def season_subset(allg, s):

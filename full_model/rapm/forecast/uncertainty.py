@@ -67,11 +67,15 @@ def _master_attrs():
         return _MASTER_CACHE["attrs"]
     attrs = {}
     if MASTER.exists():
-        m = pd.read_csv(MASTER, usecols=["playerName", "season", "age",
-                                         "position", "usagePercent"])
+        m = pd.read_csv(MASTER, usecols=["playerName", "season", "age", "team",
+                                         "position", "usagePercent", "minutesPlayed"])
         m["nm"] = m.playerName.map(pi.norm_name)
         m["season"] = pd.to_numeric(m.season, errors="coerce")
-        m = m.dropna(subset=["season"]).sort_values("season").drop_duplicates(["nm", "season"], keep="first")
+        # traded players have one row per team plus a season-total "2TM/3TM" row: prefer the
+        # total, else the max-minutes row (was an arbitrary first row)
+        m["tot"] = m.team.astype(str).str.fullmatch(r"\dTM").astype(int)
+        m = (m.dropna(subset=["season"]).sort_values(["season", "tot", "minutesPlayed"], ascending=[True, False, False])
+             .drop_duplicates(["nm", "season"], keep="first"))
         for r in m.itertuples():
             attrs.setdefault(r.nm, []).append((int(r.season), r.age, r.position, r.usagePercent))
     _MASTER_CACHE["attrs"] = attrs

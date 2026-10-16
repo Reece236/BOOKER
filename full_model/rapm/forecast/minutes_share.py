@@ -264,8 +264,10 @@ def build(write_live=True, verbose=True):
         prior = [panel[t] for t in obs if FIRST_TRAIN <= t < s]
         tr = pd.concat(prior) if prior else None
         X = panel[s].copy()
-        if tr is None or len(tr) < 400:
-            X["raw"] = X.prev.where(X.prev > 0, 0.15)          # cold start: last year's share
+        if tr is None or len(tr) < 300:                     # (2019 trains on 2018's 380 rows)
+            # cold start: last year's share; lost/short-season returners use 0.8 x two years ago
+            base = X.prev.where(X.prev > 0, 0.15)
+            X["raw"] = np.where(X.missed_prev == 1, np.maximum(base, 0.8 * X.prev2), base)
             src = "naive"
         else:
             m = _model().fit(tr, tr.y)

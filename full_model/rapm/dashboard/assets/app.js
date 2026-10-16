@@ -934,7 +934,7 @@
     ["date", "Date", (r) => r.date, true],
     ["away", "Away", (r) => `<span class="team-tag">${r.away}</span>`, true],
     ["home", "Home", (r) => `<span class="team-tag">${r.home}</span>`, true],
-    ["modelPHome", "BOOKER P(home)", (r) => pctCell(r.modelPHome)],
+    ["modelPHome", "BOOKER P(home), actives", (r) => pctCell(r.modelPHome)],
     ["marketPHome", "Market P(home)", (r) => r.marketPHome == null ? "\u2014" : pctCell(r.marketPHome)],
     ["edge", "Edge", (r) => r.marketPHome == null ? "\u2014" : edgeCell(r)],
     ["homeWin", "Result", (r) => r.homeWin ? `<span class="pos">Home W</span>` : `<span class="neg">Away W</span>`, true],

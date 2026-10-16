@@ -691,6 +691,10 @@ def project_skill_profiles(players, age_of):
 
 DRAFT_WINDOW = 4          # seasons after the draft: the rookie-scale window
 DRAFT_REPL = 2.5          # replacement level, pts/100 below average (wins-above-replacement)
+DRAFT_DATES = {2012: "2012-06-28", 2013: "2013-06-27", 2014: "2014-06-26", 2015: "2015-06-25",
+               2016: "2016-06-23", 2017: "2017-06-22", 2018: "2018-06-21", 2019: "2019-06-20",
+               2020: "2020-11-18", 2021: "2021-07-29", 2022: "2022-06-23", 2023: "2023-06-22",
+               2024: "2024-06-26", 2025: "2025-06-25"}   # GM attribution date (2020/21 moved)
 DRAFT_FLOOR = 0.5         # any minutes played count as >= this many pts/100 above replacement:
                           # the team chose him over a free replacement, and ratings that low are
                           # uncertain -- so a season can never be NEGATIVE draft value (a pick is
@@ -743,18 +747,43 @@ def build_draft(players, kpm, last_obs=2026):
              and debut.get(q, 0) > year]
         return c[0] if len(c) == 1 else None
 
+    # ONE metric for every season (audit round 2 #4): kpm * min * (BookerFormer impact + REPL),
+    # floored. BF ratings exist 2017+ (forward rows carry projected BF impacts); 2013-16 seasons
+    # only have the legacy WAA, rescaled to the BF-based scale on the 2017 overlap.
+    bfr = pd.read_csv(HERE / "booker_bookerformer_ratings.csv")
+    bf_imp = {(int(a), int(b)): float(c) for a, b, c in zip(bfr.PLAYER_ID, bfr.season, bfr.impact_total)}
+
+    def _imp(r):
+        if r.get("bfOff100") is not None and r.get("bfDef100") is not None:
+            return float(r["bfOff100"]) + float(r["bfDef100"])
+        return bf_imp.get((int(r["pid"]), int(r["season"])))
+    ov = [(float(r["waa"]) + DRAFT_REPL * kpm * float(r.get("min") or 0),
+           kpm * float(r.get("min") or 0) * (_imp(r) + DRAFT_REPL))
+          for r in players if r["season"] == 2017 and r.get("waa") is not None and _imp(r) is not None]
+    leg_scale = float(np.polyfit([a for a, _ in ov], [b for _, b in ov], 1)[0]) if len(ov) > 50 else 1.0
+
+    def _season_value(r):
+        mn = float(r.get("min") or 0)
+        im = _imp(r)
+        raw = kpm * mn * (im + DRAFT_REPL) if im is not None else (
+            leg_scale * (float(r["waa"]) + DRAFT_REPL * kpm * mn) if r.get("waa") is not None else None)
+        return None if raw is None else max(raw, DRAFT_FLOOR * kpm * mn), im is None
+
     out = []
     for d in dh.itertuples():
         pid = _match(d.player, d.draft_year)
         seasons = range(d.draft_year + 1, d.draft_year + 1 + DRAFT_WINDOW)
         val = proj = 0.0
         played = 0
+        legacy = False
         for s in seasons:
             r = rows_by.get(pid, {}).get(s) if pid is not None else None
-            if r is None or r.get("waa") is None:
+            if r is None:
                 continue
-            mn = float(r.get("min") or 0)
-            w = max(float(r["waa"]) + DRAFT_REPL * kpm * mn, DRAFT_FLOOR * kpm * mn)
+            w, leg = _season_value(r)
+            if w is None:
+                continue
+            legacy |= leg
             val += w; played += 1
             if s > last_obs:
                 proj += w
@@ -769,16 +798,17 @@ def build_draft(players, kpm, last_obs=2026):
         first = rows_by.get(pid, {}).get(d.draft_year + 1) if pid is not None else None
         if first is not None and first.get("team") not in (None, "?", d.team):
             team, via = first["team"], d.team
-        date = f"{d.draft_year}-06-25"
+        date = DRAFT_DATES.get(int(d.draft_year), f"{d.draft_year}-06-25")
         g = ex[(ex.team == team) & (ex.start <= date) & (ex.end >= date)]
         out.append({"year": int(d.draft_year), "pick": int(d.pick), "team": team, "draftedBy": via, "player": d.player,
                     "pid": pid, "value": round(val, 2), "seasons": played,
                     "projShare": round(proj / val, 2) if val > 0 else (1.0 if d.draft_year + DRAFT_WINDOW > last_obs else 0.0),
                     "complete": bool(d.draft_year >= 2014 and d.draft_year + DRAFT_WINDOW <= last_obs),
+                    "legacy": bool(legacy or d.draft_year + 1 < 2017),   # class-level: window touches pre-BF seasons
                     "gm": g.exec.iloc[-1] if len(g) else None, "currentBooker": cur,
                     "college": d.college if isinstance(d.college, str) else None})
     D = pd.DataFrame(out)
-    fit = D[D.complete]
+    fit = D[D.complete & ~D.legacy]           # curve on classes valued entirely with BF ratings
     # expected value by slot: power law (the steep first round) + a linear term that runs to 0
     # at pick 61 (late second-rounders mostly never play). All coefficients >= 0 => STRICTLY
     # DECREASING in pick: a miss at #19 always costs more than a miss at #45, and #60's
@@ -794,7 +824,8 @@ def build_draft(players, kpm, last_obs=2026):
     print(f"draft: {len(D)} picks {D.year.min()}-{D.year.max()}; slot curve {a:.2f}*(pick+{k:.2f})^-{b:.3f}+{c:.2f}: "
           + ", ".join(f"#{q} {curve(q, a, k, b, c):.2f}" for q in (1, 5, 10, 19, 30, 45, 60))
           + " | complete-class bin means " + ", ".join(f"{lo}-{hi} {fit[(fit.pick >= lo) & (fit.pick <= hi)].value.mean():.2f}" for lo, hi in bins)
-          + f"; mapped {D.pid.notna().mean():.0%} to player ids")
+          + f"; mapped {D.pid.notna().mean():.0%} to player ids; legacy-scale {leg_scale:.2f} "
+          f"({int(D.legacy.sum())} picks touch pre-2017 seasons)")
     D = D.replace({np.nan: None})
     return {"picks": D.to_dict("records"), "window": DRAFT_WINDOW, "lastObserved": last_obs,
             "curve": {"a": round(float(a), 3), "k": round(float(k), 3), "b": round(float(b), 4), "c": round(float(c), 3),

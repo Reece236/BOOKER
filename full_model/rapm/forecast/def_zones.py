@@ -84,7 +84,7 @@ def stint_events(s, st, ab, home):
     e["off_home"] = [ab.get(int(t)) == home.get(int(g)) if t == t else False for t, g in zip(e.team, e.GAME_ID)]
     m = pd.merge_asof(e.sort_values("sec"), st[["GAME_ID", "PERIOD", "START_SEC", "sid"]].sort_values("START_SEC"),
                       by=["GAME_ID", "PERIOD"], left_on="sec", right_on="START_SEC", direction="forward",
-                      allow_exact_matches=False)   # event AT a sub clock belongs to the outgoing lineup.dropna(subset=["sid"])
+                      allow_exact_matches=False).dropna(subset=["sid"])   # event AT a sub clock -> outgoing lineup
     for side, h in (("home", True), ("away", False)):
         mm = m[m.off_home == h]
         st[f"{side}_tov"] = mm[mm.tov].groupby("sid").size().reindex(st.sid, fill_value=0).to_numpy(float)

@@ -122,7 +122,7 @@ def eval_season(data, target, quick=False):
         rc = float(np.corrcoef([impact[p] for p in common],
                                [ridge_total[p] for p in common])[0, 1])
 
-        mu, sd, keepf = bf.predict_offense_points(model, model._fd, home, away,
+        mu, sd, keepf = bf.predict_offense_points(model, model._fd, home, away, poss=poss,
                                                   mc_samples=mc)
         act = yoff[keepf]; w = poss[keepf]
         stint_rmse = _wmetrics(mu, act, w)

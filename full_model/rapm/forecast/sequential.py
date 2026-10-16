@@ -119,6 +119,18 @@ def _noise_c(d, L):
     return float(1e4 * np.sum((pts[ok] - ppp * poss[ok]) ** 2) / np.sum(poss[ok]))
 
 
+def _cutoff(r, date):
+    """Injury-report cutoff for a game: 1h before the real tip (matinees tip 1-3:30pm ET, so a
+    fixed 6pm ET read confirmed inactives); 22:00Z when no real tip time is known."""
+    tip = getattr(r, "TIP_UTC", None)
+    if isinstance(tip, str) and not tip.endswith("T00:00Z") and getattr(r, "PLACEHOLDER", 0) != 1:
+        try:
+            return (pd.Timestamp(tip) - pd.Timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        except ValueError:
+            pass
+    return f"{date}T22:00:00Z"
+
+
 def run_season(data, s, rat, proj, repl, verbose=True, avail_model=None, injury_log=None,
                box=None, box_tau=None, box_kappa=None):
     """`box` = (games_box_df for season s, fitted map, sigma2) or None (stint-only)."""
@@ -273,7 +285,7 @@ def run_season(data, s, rat, proj, repl, verbose=True, avail_model=None, injury_
                 pav = dict(zip(pids_c, pp))
                 if injury_log is not None:      # live: official report beats the streak proxy
                     pav.update({k_: v_ for k_, v_ in ia.availability_override(
-                        injury_log, team, f"{date}T22:00:00Z", name_to_pid).items() if k_ in pav})
+                        injury_log, team, _cutoff(r, date), name_to_pid).items() if k_ in pav})
                 row[f"net_{side}_pregame"] = team_net(redistribute(shc, pav), m)
                 act = gpres.get((gid, team))
                 if act:

@@ -28,6 +28,8 @@ RAPM = HERE.parent
 CACHE = RAPM / "cache"
 OUT = CACHE / "booker_proj.csv"
 
+Y_IMP_W = 0.4      # weight of next-season BookerFormer impact in the training target (rest
+                   # split pure RAPM / real +/-). See audit round 2 #10 for the overlap test.
 FEATS = ["impact_off", "impact_def", "imp_prev", "shot_making", "three_rate", "rim_rate",
          "self_create", "d3p_adj", "diet_xfg", "true_create36", "true_fta36",
          "true_tov_pct", "true_stl36", "true_blk36", "true_reb36", "space_threat",
@@ -51,12 +53,14 @@ def _panel():
     bk = pd.read_csv(RAPM / "booker_bookerformer_ratings.csv")
     X = bk[["PLAYER_ID", "season", "player", "minutes",
             "impact_off", "impact_def", "impact_total", "sd_off", "sd_def"]].copy()
-    prev = bk[["PLAYER_ID", "season", "impact_total"]].rename(columns={"impact_total": "imp_prev"})
-    prev = prev.copy(); prev["season"] += 1
-    X = X.merge(prev, on=["PLAYER_ID", "season"], how="left")
-    prev2 = bk[["PLAYER_ID", "season", "impact_total"]].rename(columns={"impact_total": "imp_prev2"})
-    prev2 = prev2.copy(); prev2["season"] += 2
-    X = X.merge(prev2, on=["PLAYER_ID", "season"], how="left")
+    # lagged ratings via pi.ratings_through so short/lost-season returners carry their last
+    # real rating (consistent with every other prior-only consumer; audit round 2 #7)
+    lag = {}
+    for s_ in sorted(bk.season.unique()):
+        r_ = pi.ratings_through(int(s_), bk)
+        lag[int(s_)] = dict(zip(r_.PLAYER_ID, r_.impact_total))
+    X["imp_prev"] = [lag.get(int(s_) - 1, {}).get(p_, np.nan) for p_, s_ in zip(X.PLAYER_ID, X.season)]
+    X["imp_prev2"] = [lag.get(int(s_) - 2, {}).get(p_, np.nan) for p_, s_ in zip(X.PLAYER_ID, X.season)]
     pm = bk[["PLAYER_ID", "season", "minutes"]].rename(columns={"minutes": "min_prev"})
     pm = pm.copy(); pm["season"] += 1
     X = X.merge(pm, on=["PLAYER_ID", "season"], how="left")
@@ -203,9 +207,10 @@ def build():
         bp, br = tr.y_pure.notna(), tr.y_real.notna()
         sp_ = (tr.y_imp[bp].std() / (tr.y_pure[bp].std() or 1.0)) if bp.any() else 1.0
         sr_ = (tr.y_imp[br].std() / (tr.y_real[br].std() or 1.0)) if br.any() else 1.0
-        tr["y_tgt"] = (0.4 * tr.y_imp
-                       + 0.3 * np.where(bp, tr.y_pure * sp_, tr.y_imp)
-                       + 0.3 * np.where(br, tr.y_real * sr_, tr.y_imp))
+        wi = Y_IMP_W; wo = (1.0 - wi) / 2.0
+        tr["y_tgt"] = (wi * tr.y_imp
+                       + wo * np.where(bp, tr.y_pure * sp_, tr.y_imp)
+                       + wo * np.where(br, tr.y_real * sr_, tr.y_imp))
         med = tr[FEATS].median().fillna(0.0)   # early folds: imp_prev2 all-NaN
         sc = StandardScaler().fit(tr[FEATS].fillna(med))
         m = Ridge(alpha=10.0).fit(sc.transform(tr[FEATS].fillna(med)), tr.y_tgt)

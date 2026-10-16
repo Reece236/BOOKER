@@ -88,7 +88,7 @@ DROPOUT = 0.10                     # BayesFormer dropout rate (~5-10% recommende
 # TAU_RATING is the prior std of a player's O/D rating in points/100. 2.0 keeps
 # low-minute players shrunk to their (informative) box prior so the leaderboard
 # stays sane; looser priors let small-sample noise inflate role players.
-TAU_RATING = 2.0
+TAU_RATING = float(os.environ.get("BF_TAU", 3.0))   # re-tuned with the poss likelihood (2.0 under legacy)
 # Proper ELBO scaling: the data term is a possession-WEIGHTED MEAN NLL, so the full
 # KL must enter divided by the total training weight (KL_BETA=1.0). With that
 # normalization, each player's effective likelihood weight equals their possession
@@ -107,6 +107,11 @@ SEED = 17
 # Training-length knobs are env-overridable so an overnight run can crank iterations
 # (e.g. BF_EPOCHS=600 BF_PATIENCE=50 BF_MC=200) without changing interactive defaults.
 MAX_EPOCHS = int(os.environ.get("BF_EPOCHS", 60))
+# LIKELIHOOD (audit round 2 #3). "poss": proper per-possession Gaussian -- stint i has variance
+# sigma^2/poss_i, weighted by recency decay only; no target clipping (tiny stints already get
+# tiny precision). "legacy": poss-weighted mean NLL with one sigma^2, which fits sigma^2 to
+# C/mean(poss) and overstates data precision ~2.95x; Y_CLIP was asymmetric (-1.55 pts/100 shift).
+BF_LIK = os.environ.get("BF_LIK", "poss")     # gate (bf_gate.py): wins RMSE 9.10->8.83, R2 .35->.39, cov90 .86->.94
 PATIENCE = int(os.environ.get("BF_PATIENCE", 8))
 MC_SAMPLES = int(os.environ.get("BF_MC", 40))  # T stochastic passes for the predictive dist
 # After early stopping picks the epoch count on the chronologically-latest 10% slice,
@@ -155,6 +160,7 @@ class FormerData:
     tau_def: np.ndarray = None     # [P] per-player defensive prior std
     off_ctx: dict = field(default_factory=dict)   # pid -> list[(O[5], D[5])]
     def_ctx: dict = field(default_factory=dict)
+    poss: np.ndarray = None        # [N] stint possessions (per-possession likelihood)
 
 
 def _lineup_rows(lineup, pid_to_idx):
@@ -270,7 +276,7 @@ def prepare_data(data, train_seasons, target_season) -> FormerData:
                         for p in pids], dtype=np.float32)
     tau_def = np.full(len(pids), TAU_RATING, dtype=np.float32)
 
-    off_rows, def_rows, ys, ws, orders = [], [], [], [], []
+    off_rows, def_rows, ys, ws, orders, ps_ = [], [], [], [], [], []
     off_ctx = {p: [] for p in pids}
     def_ctx = {p: [] for p in pids}
     league_ref = LEAGUE
@@ -299,10 +305,10 @@ def prepare_data(data, train_seasons, target_season) -> FormerData:
             order_key = s * 10_000_000 + int(g) % 10_000_000
             # home offense vs away defense
             off_rows.append(ho); def_rows.append(aw)
-            ys.append(float(yo) - lg); ws.append(wt); orders.append(order_key)
+            ys.append(float(yo) - lg); ws.append(wt); orders.append(order_key); ps_.append(float(poss))
             # away offense vs home defense
             off_rows.append(aw); def_rows.append(ho)
-            ys.append(float(yd) - lg); ws.append(wt); orders.append(order_key)
+            ys.append(float(yd) - lg); ws.append(wt); orders.append(order_key); ps_.append(float(poss))
             # leave-one-out contexts (store the parameter-row lineups)
             for p in hl:
                 off_ctx[p].append((ho, aw))
@@ -316,8 +322,10 @@ def prepare_data(data, train_seasons, target_season) -> FormerData:
         prior_off=prior_off, prior_def=prior_def,
         off_idx=np.array(off_rows, dtype=np.int64),
         def_idx=np.array(def_rows, dtype=np.int64),
-        y=np.clip(np.array(ys, dtype=np.float32), -Y_CLIP, Y_CLIP),
+        y=(np.array(ys, dtype=np.float32) if BF_LIK == "poss"
+           else np.clip(np.array(ys, dtype=np.float32), -Y_CLIP, Y_CLIP)),
         w=np.array(ws, dtype=np.float32),
+        poss=np.array(ps_, dtype=np.float32),
         order=np.array(orders, dtype=np.int64),
         league_ref=float(league_ref),
         tau_off=tau_off, tau_def=tau_def,
@@ -472,6 +480,24 @@ class BookerFormer(nn.Module):
 # ---------------------------------------------------------------------------
 # Training
 # ---------------------------------------------------------------------------
+def _nll(mu, logs2, yt, wt, pt):
+    """Normalised data term. legacy: poss-weighted mean NLL, one sigma^2. poss: per-possession
+    Gaussian (var = sigma^2/poss), decay-weighted: wt/pt is the recency decay."""
+    if BF_LIK == "poss" and pt is not None:
+        nll = 0.5 * (logs2 - torch.log(pt.clamp_min(1e-3)) + pt * (yt - mu) ** 2 * torch.exp(-logs2))
+        dw = wt / pt.clamp_min(1e-3)
+        return (dw * nll).sum() / dw.sum().clamp_min(1e-6)
+    nll = 0.5 * (logs2 + (yt - mu) ** 2 * torch.exp(-logs2))
+    return (wt * nll).sum() / wt.sum().clamp_min(1e-6)
+
+
+def _kl_norm(w, pt, idx):
+    """Denominator matching _nll's normalisation (sum of decay in poss mode)."""
+    if BF_LIK == "poss" and pt is not None:
+        return (w[idx] / pt[idx].clamp_min(1e-3)).sum()
+    return w[idx].sum()
+
+
 def train_model(fd: FormerData, use_attention=True, verbose=False):
     torch.manual_seed(SEED)
     dev = _device()
@@ -484,12 +510,13 @@ def train_model(fd: FormerData, use_attention=True, verbose=False):
     def_idx = torch.from_numpy(fd.def_idx)
     y = torch.from_numpy(fd.y)
     w = torch.from_numpy(fd.w)
+    pt = torch.from_numpy(fd.poss) if fd.poss is not None else None
 
     cut = np.quantile(fd.order, 1.0 - VAL_FRAC)
     val_mask = fd.order >= cut
     tr = np.where(~val_mask)[0]
     va = np.where(val_mask)[0]
-    w_total = float(w[torch.from_numpy(tr)].sum())   # for ELBO KL normalization
+    w_total = float(_kl_norm(w, pt, torch.from_numpy(tr)))   # for ELBO KL normalization
 
     def batch_loss(ao, ad, b_idx, mc):
         oi, di = off_idx[b_idx].to(dev), def_idx[b_idx].to(dev)
@@ -497,8 +524,7 @@ def train_model(fd: FormerData, use_attention=True, verbose=False):
         def_e = model.emb[di] if use_attention else None
         mu, logs2 = model(ao[oi], ad[di], off_e, def_e, mc=mc)
         yt, wt = y[b_idx].to(dev), w[b_idx].to(dev)
-        nll = 0.5 * (logs2 + (yt - mu) ** 2 * torch.exp(-logs2))
-        return (wt * nll).sum() / wt.sum().clamp_min(1e-6)
+        return _nll(mu, logs2, yt, wt, pt[b_idx].to(dev) if pt is not None else None)
 
     best_val, best_state, bad, best_epoch = float("inf"), None, 0, 0
     history = []   # per-epoch convergence diagnostics
@@ -536,13 +562,13 @@ def train_model(fd: FormerData, use_attention=True, verbose=False):
     if best_state is not None:
         model.load_state_dict(best_state)
     if REFIT_FULL and len(va):
-        model = _refit_all(fd, use_attention, best_epoch + 1, off_idx, def_idx, y, w)
+        model = _refit_all(fd, use_attention, best_epoch + 1, off_idx, def_idx, y, w, pt)
     model._history = history
     model._best_epoch = best_epoch
     return model, best_val
 
 
-def _refit_all(fd, use_attention, n_epochs, off_idx, def_idx, y, w):
+def _refit_all(fd, use_attention, n_epochs, off_idx, def_idx, y, w, pt=None):
     """Re-train from the same init on every observation for the early-stopped epoch
     count (KL normalized by the full training weight)."""
     torch.manual_seed(SEED)
@@ -552,7 +578,7 @@ def _refit_all(fd, use_attention, n_epochs, off_idx, def_idx, y, w):
                          tau_off=fd.tau_off, tau_def=fd.tau_def).to(dev)
     opt = torch.optim.Adam(model.param_groups(), lr=LR)
     allidx = np.arange(len(fd.y))
-    w_total = float(w.sum())
+    w_total = float(_kl_norm(w, pt, torch.from_numpy(allidx)))
     rng = np.random.default_rng(SEED)
     for _ in range(n_epochs):
         model.train()
@@ -565,8 +591,7 @@ def _refit_all(fd, use_attention, n_epochs, off_idx, def_idx, y, w):
             def_e = model.emb[di] if use_attention else None
             mu, logs2 = model(ao[oi], ad[di], off_e, def_e, mc=True)
             yt, wt = y[b].to(dev), w[b].to(dev)
-            nll = 0.5 * (logs2 + (yt - mu) ** 2 * torch.exp(-logs2))
-            loss = (wt * nll).sum() / wt.sum().clamp_min(1e-6) \
+            loss = _nll(mu, logs2, yt, wt, pt[b].to(dev) if pt is not None else None) \
                 + KL_BETA * model.kl() / w_total
             opt.zero_grad()
             loss.backward()
@@ -689,13 +714,15 @@ def _ensemble(model, mc_samples):
 
 
 def predict_offense_points(model: BookerFormer, fd: FormerData,
-                           off_lineups, def_lineups, mc_samples=MC_SAMPLES):
+                           off_lineups, def_lineups, mc_samples=MC_SAMPLES, poss=None):
     """Predict offense points/100 for (offense pids, defense pids) matchups.
 
     Unknown players map to the league-average row. Returns (mu, sd, keep_mask):
     mu is the predictive mean and sd the TOTAL predictive std (epistemic spread of
     the mean across the ensemble + mean aleatoric std), in un-centered points/100;
-    keep_mask flags rows with exactly 5+5 mappable slots."""
+    keep_mask flags rows with exactly 5+5 mappable slots. Under BF_LIK="poss" the model's
+    sigma^2 is PER POSSESSION: pass each matchup's `poss` to get sigma^2/poss (if omitted the
+    aleatoric part is for a single possession)."""
     dev = _device()
     model.eval()
     draws, P = _ensemble(model, mc_samples)
@@ -729,7 +756,10 @@ def predict_offense_points(model: BookerFormer, fd: FormerData,
             preds[:, t] = mu.cpu().numpy() + fd.league_ref
             alea_var[:, t] = torch.exp(logs2).cpu().numpy()
     epi_var = preds.var(axis=1, ddof=1) if mc_samples > 1 else np.zeros(len(O))
-    total_sd = np.sqrt(epi_var + alea_var.mean(axis=1))
+    alea = alea_var.mean(axis=1)
+    if BF_LIK == "poss" and poss is not None:
+        alea = alea / np.clip(np.asarray(poss, float)[keep], 1e-3, None)
+    total_sd = np.sqrt(epi_var + alea)
     return preds.mean(axis=1), total_sd, keep
 
 
