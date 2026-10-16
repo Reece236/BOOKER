@@ -691,17 +691,21 @@ def project_skill_profiles(players, age_of):
 
 DRAFT_WINDOW = 4          # seasons after the draft: the rookie-scale window
 DRAFT_REPL = 2.5          # replacement level, pts/100 below average (wins-above-replacement)
+DRAFT_FLOOR = 0.5         # any minutes played count as >= this many pts/100 above replacement:
+                          # the team chose him over a free replacement, and ratings that low are
+                          # uncertain -- so a season can never be NEGATIVE draft value (a pick is
+                          # worth at least what not playing him is worth: zero)
 
 
 def build_draft(players, kpm, last_obs=2026):
     """Draft classes with value over expected-by-slot, for the Draft pages.
 
-    value    = wins above replacement in seasons draft+1 .. draft+4 (WAA plus replacement
-               credit for minutes played: waa + DRAFT_REPL * kpm * minutes); a season with no
-               NBA row counts as 0. Seasons after `last_obs` use BOOKER's forward projections
+    value    = wins above replacement in seasons draft+1 .. draft+4, each season
+               max(waa + DRAFT_REPL*kpm*min, DRAFT_FLOOR*kpm*min): never negative, and any real
+               playing time is worth something; a season with no NBA row counts as 0. Seasons after `last_obs` use BOOKER's forward projections
                (flagged in `projShare`).
-    expected = smooth slot curve a + b*exp(-c*pick) fit on classes whose window is fully
-               observed (2014 .. last_obs-4). surplus = value - expected.
+    expected = strictly decreasing slot curve (power law + linear-to-zero at #61) fit on classes whose window
+               is fully observed (2014 .. last_obs-4). surplus = value - expected.
     gm       = top executive in office for the drafting team on draft night (June 25).
     team     = the team he debuted with when that differs from the drafting team (draft-night
                trades; `draftedBy` keeps the original), so credit follows the decision."""
@@ -718,9 +722,30 @@ def build_draft(players, kpm, last_obs=2026):
     for r in players:
         rows_by.setdefault(r["pid"], {})[r["season"]] = r
         name2pid.setdefault(pi.norm_name(r["player"]), r["pid"])
+    SUFFIX = {"jr", "sr", "ii", "iii", "iv"}
+    def _toks(n):
+        return [w for w in pi.norm_name(n).replace(".", "").split() if w not in SUFFIX]
+    debut = {pid_: min(ss) for pid_, ss in rows_by.items()}
+    by_last = {}
+    for nm_, pid_ in name2pid.items():
+        tk = [w for w in nm_.replace(".", "").split() if w not in SUFFIX]
+        if len(tk) >= 2:
+            by_last.setdefault(tk[-1], []).append((tk[0], pid_))
+
+    def _match(name, year):
+        pid_ = name2pid.get(pi.norm_name(name))
+        if pid_ is not None:
+            return pid_
+        tk = _toks(name)            # fallback: suffixes stripped, Ron ~ Ronald, debut after draft
+        if len(tk) < 2:
+            return None
+        c = [q for f, q in by_last.get(tk[-1], []) if (f.startswith(tk[0]) or tk[0].startswith(f))
+             and debut.get(q, 0) > year]
+        return c[0] if len(c) == 1 else None
+
     out = []
     for d in dh.itertuples():
-        pid = name2pid.get(pi.norm_name(d.player))
+        pid = _match(d.player, d.draft_year)
         seasons = range(d.draft_year + 1, d.draft_year + 1 + DRAFT_WINDOW)
         val = proj = 0.0
         played = 0
@@ -728,7 +753,8 @@ def build_draft(players, kpm, last_obs=2026):
             r = rows_by.get(pid, {}).get(s) if pid is not None else None
             if r is None or r.get("waa") is None:
                 continue
-            w = float(r["waa"]) + DRAFT_REPL * kpm * float(r.get("min") or 0)
+            mn = float(r.get("min") or 0)
+            w = max(float(r["waa"]) + DRAFT_REPL * kpm * mn, DRAFT_FLOOR * kpm * mn)
             val += w; played += 1
             if s > last_obs:
                 proj += w
@@ -753,16 +779,26 @@ def build_draft(players, kpm, last_obs=2026):
                     "college": d.college if isinstance(d.college, str) else None})
     D = pd.DataFrame(out)
     fit = D[D.complete]
-    curve = lambda x, a, b, c: a + b * np.exp(-c * x)
-    (a, b, c), _ = curve_fit(curve, fit.pick.values, fit.value.values, p0=[0.5, 8.0, 0.1], maxfev=20000)
-    D["expected"] = curve(D.pick.values, a, b, c).round(2)
+    # expected value by slot: power law (the steep first round) + a linear term that runs to 0
+    # at pick 61 (late second-rounders mostly never play). All coefficients >= 0 => STRICTLY
+    # DECREASING in pick: a miss at #19 always costs more than a miss at #45, and #60's
+    # expectation is near zero. Fit to the per-slot means (each slot weighted equally, so the
+    # 27 top-3 picks don't dictate the tail).
+    curve = lambda x, a, k, b, c: a * (x + k) ** (-b) + c * (61.0 - x) / 60.0 - a * (61.0 + k) ** (-b)
+    sm = fit.groupby("pick").value.mean()
+    (a, k, b, c), _ = curve_fit(curve, sm.index.values.astype(float), sm.values, p0=[30.0, 1.0, 1.0, 1.0],
+                                bounds=([0, 0, 0.05, 0], [1e4, 30, 5, 20]), maxfev=50000)
+    D["expected"] = curve(D.pick.values, a, k, b, c).round(2)
     D["surplus"] = (D.value - D.expected).round(2)
-    print(f"draft: {len(D)} picks {D.year.min()}-{D.year.max()}, slot curve {a:.2f} + {b:.2f}*exp(-{c:.3f}*pick) "
-          f"(#1 {curve(1, a, b, c):.1f} WAR, #30 {curve(30, a, b, c):.1f}, #60 {curve(60, a, b, c):.1f}); "
-          f"mapped {D.pid.notna().mean():.0%} to player ids")
+    bins = [(1, 3), (4, 10), (11, 20), (21, 30), (31, 45), (46, 60)]
+    print(f"draft: {len(D)} picks {D.year.min()}-{D.year.max()}; slot curve {a:.2f}*(pick+{k:.2f})^-{b:.3f}+{c:.2f}: "
+          + ", ".join(f"#{q} {curve(q, a, k, b, c):.2f}" for q in (1, 5, 10, 19, 30, 45, 60))
+          + " | complete-class bin means " + ", ".join(f"{lo}-{hi} {fit[(fit.pick >= lo) & (fit.pick <= hi)].value.mean():.2f}" for lo, hi in bins)
+          + f"; mapped {D.pid.notna().mean():.0%} to player ids")
     D = D.replace({np.nan: None})
     return {"picks": D.to_dict("records"), "window": DRAFT_WINDOW, "lastObserved": last_obs,
-            "curve": [round(float(a), 3), round(float(b), 3), round(float(c), 4)]}
+            "curve": {"a": round(float(a), 3), "k": round(float(k), 3), "b": round(float(b), 4), "c": round(float(c), 3),
+                      "form": "a*(pick+k)^-b + c*(61-pick)/60 - a*(61+k)^-b"}, "floor": DRAFT_FLOOR}
 
 
 def build_diagnostics(players):

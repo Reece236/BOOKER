@@ -59,6 +59,19 @@ AVAIL = 0.85       # typical availability: projected (unconditional) share / AVA
 # with weight c^ALPHA (c = share when playing). ALPHA < 1 -> the deeper bench absorbs
 # relatively more; a same-position term fit to zero. Test presence RMSE .1352 -> .1315.
 ALPHA = 0.4
+# BOX-SCORE MEASUREMENT CHANNEL (audit #2: stint-only evidence learns too slowly -- a full MVP
+# season moved Curry +3.8). Each player-game adds  f(box per 100) = o + d + b_p + e,
+# e ~ N(0, BOX_KAPPA * sigma2 / poss),  b_p ~ N(0, BOX_TAU^2) a persistent per-player box
+# misfit state (defensive specialists etc. -- without it the filter would converge to the
+# box score). f, sigma2 fit on seasons < s only (forecast.box_games.fit_box_map).
+# RESULT (box_tune.py): OFF. Final spec = within-team contrasts + misfit prior from last
+# season. Tuned 2019-21 (tau 3, kappa 1): LL .6199->.6194, mid rho .406->.410. TEST 2022-26:
+# pregame LL .6134->.6131 (nil), mid rho .423->.418, late .385->.367 (worse). Earlier specs
+# (raw rows, zero-mean misfit) were clearly harmful (double-counted team shooting luck).
+BOX_ON = False
+BOX_TAU = 3.0
+BOX_KAPPA = 1.0
+BOX_MIN_POSS = 5.0
 ROT_MIN = 0.12     # actives mode: min share-when-playing (~6 min/g) to count as an active
 
 
@@ -106,7 +119,11 @@ def _noise_c(d, L):
     return float(1e4 * np.sum((pts[ok] - ppp * poss[ok]) ** 2) / np.sum(poss[ok]))
 
 
-def run_season(data, s, rat, proj, repl, verbose=True, avail_model=None, injury_log=None):
+def run_season(data, s, rat, proj, repl, verbose=True, avail_model=None, injury_log=None,
+               box=None, box_tau=None, box_kappa=None):
+    """`box` = (games_box_df for season s, fitted map, sigma2) or None (stint-only)."""
+    box_tau = BOX_TAU if box_tau is None else box_tau
+    box_kappa = BOX_KAPPA if box_kappa is None else box_kappa
     reg_games = data.GAMES[s]
     reg_games = reg_games[reg_games.SEASON_TYPE == "Regular Season"].sort_values(["DATE", "GAME_ID"])
     st = data.STINTS.get(s)
@@ -130,7 +147,8 @@ def run_season(data, s, rat, proj, repl, verbose=True, avail_model=None, injury_
     pids = sorted(pids)
     P = len(pids)
     ix = {p: i for i, p in enumerate(pids)}
-    D = 2 * P + 2
+    NB = P if box is not None else 0                  # per-player box-misfit states
+    D = 2 * P + 2 + NB
     m = np.zeros(D)
     v = np.zeros(D)
     for p, i in ix.items():
@@ -148,8 +166,28 @@ def run_season(data, s, rat, proj, repl, verbose=True, avail_model=None, injury_
             v[i] = v[P + i] = NEW_SD ** 2
     m[2 * P], v[2 * P] = 0.0, MU_SD ** 2
     m[2 * P + 1], v[2 * P + 1] = H_MEAN, H_SD ** 2
+    if NB:
+        v[2 * P + 2:] = box_tau ** 2
     S = np.diag(v)
     qd = np.full(D, Q_DAY); qd[2 * P] = Q_MU; qd[2 * P + 1] = 0.0
+    if NB:
+        qd[2 * P + 2:] = 0.0                            # misfit persists within the season
+        bx, bmap, bsig2, bprev = box
+        bx = bx[bx.poss >= BOX_MIN_POSS]
+        from . import box_games as bg
+        # misfit prior: the box's persistent over/under-statement of a player is KNOWN from
+        # last season (f(last season's box) - prior rating); start b_p there so the box only
+        # carries CHANGES in production. Players without a real s-1 box sample start at 0.
+        if bprev is not None and len(bprev):
+            fprev = dict(zip(bprev.PLAYER_ID.astype(int), bmap.predict(bg.rates(bprev))))
+            for p_, i_ in ix.items():
+                if p_ in fprev and p_ in r1.index:
+                    m[2 * P + 2 + i_] = fprev[p_] - (m[i_] + m[P + i_])   # so E[y] = f(box_{s-1})
+        bx = bx.assign(yb=bmap.predict(bg.rates(bx)))
+        box_by_gid = {int(g_): list(zip(d_.PLAYER_ID.astype(int), d_.yb, d_.poss))
+                      for g_, d_ in bx.groupby("GAME_ID")}
+    else:
+        box_by_gid = {}
 
     # ---- per-game presence + team roster bookkeeping --------------------------------
     tgs = ms.team_game_seconds(data, s)
@@ -263,9 +301,35 @@ def run_season(data, s, rat, proj, repl, verbose=True, avail_model=None, injury_
             game_rows.append(row)
         # ---- Kalman update with this date's stints ----
         g = stints_by_date.get(date)
+        # WITHIN-TEAM box contrasts: centre each player's f(box) on his teammates'
+        # poss-weighted mean that game. Team shooting luck is already in the stint margins;
+        # raw box rows counted it twice and were correlated across all ten players.
+        brows = []                                       # (pids, weights, y, poss)
+        for r_ in day.itertuples():
+            bg_ = {p_: (yb_, ps_) for (p_, yb_, ps_) in box_by_gid.get(int(r_.GAME_ID), []) if p_ in ix}
+            if not bg_:
+                continue
+            for team_ in (r_.HOME, r_.AWAY):
+                act_ = gpres.get((int(r_.GAME_ID), team_)) or {}
+                mem = [p_ for p_ in act_ if p_ in bg_]
+                if len(mem) < 4:
+                    continue
+                ps = np.array([bg_[p_][1] for p_ in mem]); w_ = ps / ps.sum()
+                yv = np.array([bg_[p_][0] for p_ in mem]); ybar = float(w_ @ yv)
+                for j_, p_ in enumerate(mem):
+                    brows.append((mem, w_, j_, yv[j_] - ybar, ps[j_]))
         if g is not None and len(g):
             n = len(g)
-            H = np.zeros((2 * n, D)); y = np.zeros(2 * n); R = np.zeros(2 * n)
+            nb = len(brows)
+            H = np.zeros((2 * n + nb, D)); y = np.zeros(2 * n + nb); R = np.zeros(2 * n + nb)
+            for j_, (mem, w_, jj, yc, ps_) in enumerate(brows):
+                rr = 2 * n + j_
+                for k_, q_ in enumerate(mem):
+                    c_ = (1.0 if k_ == jj else 0.0) - w_[k_]
+                    iq = ix[q_]
+                    H[rr, iq] += c_; H[rr, P + iq] += c_; H[rr, 2 * P + 2 + iq] += c_
+                y[rr] = yc
+                R[rr] = box_kappa * bsig2 / ps_
             for k_, (hl, al, poss, yo, yd) in enumerate(zip(g.home, g.away, g.POSS,
                                                             g.Y_OFF_HOME, g.Y_DEF_HOME)):
                 for rr, off, de, yy, home in ((2 * k_, hl, al, yo, 1), (2 * k_ + 1, al, hl, yd, 0)):
@@ -320,6 +384,30 @@ def availability_panel():
     return P
 
 
+_BOX = {}
+
+
+def box_inputs(s, rat):
+    """(season-s box lines, map fit on seasons < s, sigma2) or None."""
+    if not BOX_ON:
+        return None
+    from . import box_games as bg
+    if "B" not in _BOX:
+        p = CACHE / "box_games.parquet"
+        _BOX["B"] = pd.read_parquet(p) if p.exists() else None
+    B = _BOX["B"]
+    if B is None:
+        return None
+    prior = [x for x in sorted(B.season.unique()) if x < s]
+    if len(prior) < 3:
+        return None
+    bmap, _, sig2 = bg.fit_box_map(B, rat, prior)
+    cur = B[B.season == s]
+    pv = B[B.season == s - 1].groupby("PLAYER_ID")[bg.FEATS + ["poss"]].sum().reset_index()
+    pv = pv[pv.poss >= bg.MIN_POSS_FIT / 2]
+    return (cur, bmap, sig2, pv)
+
+
 def main(seasons=range(2019, 2028)):
     data = pi.BookerData()
     rat = pd.read_csv(RAPM / "booker_bookerformer_ratings.csv")
@@ -338,7 +426,7 @@ def main(seasons=range(2019, 2028)):
             except Exception as exc:     # no log reachable -> streak proxy only
                 print(f"  {s}: injury log unavailable ({exc})")
         G, Pf, Dd = run_season(data, s, rat, proj, repl, avail_model=fit_availability(panel, s),
-                               injury_log=log)
+                               injury_log=log, box=box_inputs(s, rat))
         G.to_csv(CACHE / f"seq_games_{s}.csv", index=False)
         Pf.to_parquet(CACHE / f"seq_players_{s}.parquet")
         Dd.to_csv(CACHE / f"seq_team_daily_{s}.csv", index=False)
