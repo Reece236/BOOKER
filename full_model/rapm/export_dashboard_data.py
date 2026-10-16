@@ -690,7 +690,12 @@ def project_skill_profiles(players, age_of):
 
 
 DRAFT_WINDOW = 4          # seasons after the draft: the rookie-scale window
-DRAFT_REPL = 2.5          # replacement level, pts/100 below average (wins-above-replacement)
+DRAFT_REPL = 3.9          # replacement level, pts/100 below average. MEASURED (forecast/
+                          # replacement_level.py): fringe players (<500 min) produce -3.9 (se .14)
+                          # per 100 in competitive possessions, pooled 2018-26 -- their own shrunk
+                          # ratings say ~-1.8, which is why the old -2.5 was too high. Garbage-time-
+                          # only players measure -7.4 (se 1.1): below replacement, not freely
+                          # available talent.
 DRAFT_DATES = {2012: "2012-06-28", 2013: "2013-06-27", 2014: "2014-06-26", 2015: "2015-06-25",
                2016: "2016-06-23", 2017: "2017-06-22", 2018: "2018-06-21", 2019: "2019-06-20",
                2020: "2020-11-18", 2021: "2021-07-29", 2022: "2022-06-23", 2023: "2023-06-22",
@@ -817,7 +822,7 @@ def build_draft(players, kpm, last_obs=2026):
     curve = lambda x, a, k, b, c: a * (x + k) ** (-b) + c * (61.0 - x) / 60.0 - a * (61.0 + k) ** (-b)
     sm = fit.groupby("pick").value.mean()
     (a, k, b, c), _ = curve_fit(curve, sm.index.values.astype(float), sm.values, p0=[30.0, 1.0, 1.0, 1.0],
-                                bounds=([0, 0, 0.05, 0], [1e4, 30, 5, 20]), maxfev=50000)
+                                bounds=([0, 0, 0.05, 0], [1e9, 60, 8, 20]), maxfev=200000)
     D["expected"] = curve(D.pick.values, a, k, b, c).round(2)
     D["surplus"] = (D.value - D.expected).round(2)
     bins = [(1, 3), (4, 10), (11, 20), (21, 30), (31, 45), (46, 60)]
