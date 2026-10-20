@@ -21,6 +21,7 @@
   <button class="tab" data-view="leaderboard">Players</button>
   <button class="tab" data-view="teams">Teams</button>
   <button class="tab" data-view="draft">Draft</button>
+  <button class="tab" data-view="fantasy">Fantasy</button>
   <button class="tab" data-view="more">More</button>
 </nav>
 
@@ -343,6 +344,12 @@
     <div class="table-scroll"><table class="grid" id="dr-rank"><thead></thead><tbody></tbody></table></div>
   </section>
 
+  <!-- FANTASY ---------------------------------------------------------- -->
+  <section id="view-fantasy" class="view" hidden>
+    <h2 class="page-head">Fantasy: H2H categories</h2>
+    <div id="fx-root"></div>
+  </section>
+
   <!-- STAT LEADERS ----------------------------------------------------- -->
   <section id="view-leaders" class="view" hidden>
     <h2 class="page-head">True-Skill Leaders</h2>
@@ -402,6 +409,7 @@
 <script src="assets/chart.umd.js"></script>
 <script src="data/data.js"></script>
 <script src="assets/app.js"></script>
+<script src="assets/fantasy.js"></script>
 </body>
 </html>
 

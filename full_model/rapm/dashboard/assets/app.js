@@ -262,6 +262,7 @@
     if (v === "gameodds") renderGameOdds();
     if (v === "leaders") renderLeaders();
     if (v === "draft") renderDraft();
+    if (v === "fantasy" && window.renderFantasy) window.renderFantasy();
     if (v === "matchups") renderMatchup();
     if (v === "diagnostics") renderDiagnostics();
     if (v === "method") renderMethod();
@@ -2623,6 +2624,7 @@
     ["trajectory", "Trajectory", "Career arcs, form dots, projections, any skill"],
     ["leaders", "True-Skill Leaders", "Difficulty-adjusted skill leaderboards, incl. projections"],
     ["draft", "Draft", "Draft classes and team / GM drafting skill"],
+    ["fantasy", "Fantasy", "H2H category league: auction or snake draft, matchups, moves"],
     ["matchups", "Matchups", "Team vs team skill comparison"],
     ["gameodds", "Game Odds", "Model vs market: log-loss, calibration, ROI"],
     ["diagnostics", "Diagnostics", "Calibration and model health"],

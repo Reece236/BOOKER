@@ -837,6 +837,25 @@ def build_draft(players, kpm, last_obs=2026):
                       "form": "a*(pick+k)^-b + c*(61-pick)/60 - a*(61+k)^-b"}, "floor": DRAFT_FLOOR}
 
 
+def build_fantasy():
+    """Fantasy H2H 8-cat projections (forecast/fantasy_proj.py) for the Fantasy page:
+    per-game lines at projected minutes, projected games, rookie flag."""
+    p = CACHE / "fantasy_proj_2027.csv"
+    if not p.exists():
+        return None
+    f = pd.read_csv(p)
+    f = f[f.games >= 1]
+    r3 = lambda v: round(float(v), 3)
+    rows = [{"pid": int(r.PLAYER_ID), "n": r.player, "t": r.team, "pos": (r.pos if isinstance(r.pos, str) else "-"),
+             "age": (None if pd.isna(r.age) else int(r.age)), "g": round(float(r.games), 1), "mpg": round(float(r.mpg), 1),
+             "pts": r3(r.pts_g), "reb": r3(r.reb_g), "ast": r3(r.ast_g), "stl": r3(r.stl_g), "blk": r3(r.blk_g),
+             "tpm": r3(r.tpm_g), "fgm": r3(r.fgm_g), "fga": r3(r.fga_g), "ftm": r3(r.ftm_g), "fta": r3(r.fta_g),
+             "rk": int(r.rookie)} for r in f.itertuples()]
+    print(f"fantasy: {len(rows)} player projections for 2027")
+    return {"season": 2027, "players": rows,
+            "cats": ["fg", "ft", "tpm", "reb", "ast", "stl", "blk", "pts"]}
+
+
 def build_diagnostics(players):
     """Bayesian-model diagnostics block: uncertainty-vs-minutes, True Value fit +
     FA scatter, and the out-of-sample backtest summary."""
@@ -1334,6 +1353,7 @@ def main():
                             else age_map.get((cv.norm_name(p["player"]), p["season"]))))
     diagnostics = build_diagnostics(players)  # Bayesian calibration + True Value fit
     draft = build_draft(players, kpm)        # draft classes + value over slot (Draft pages)
+    fantasy = build_fantasy()                # fantasy H2H projections (Fantasy page)
 
     bt = pd.read_csv(HERE / "waa_backtest_team_predictions.csv")
     team_pred = [{
@@ -1383,6 +1403,7 @@ def main():
         "forecastSeasons": forecast_seasons,
         "trade": trade,
         "draft": draft,
+        "fantasy": fantasy,
         "diagnostics": diagnostics,
         "generated": pd.Timestamp.utcnow().strftime("%Y-%m-%d"),
     }

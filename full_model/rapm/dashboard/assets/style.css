@@ -447,3 +447,15 @@ table.grid tbody tr.clickable{cursor:pointer}
 .link-btn{background:none; border:0; padding:0; color:var(--accent); text-decoration:underline; cursor:pointer; font-size:12px; font-family:var(--sans)}
 .link-btn:hover{color:var(--ink)}
 .controls label input[type=checkbox]{width:auto; margin-right:5px; vertical-align:middle}
+
+/* fantasy ---------------------------------------------------------------------- */
+.fx-nav .link-btn.on{color:var(--ink); font-weight:700; text-decoration:none}
+.fx-teamstrip{display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:6px; margin:0 0 12px}
+.fx-team{border:1px solid var(--rule); padding:6px 8px; background:var(--panel); display:flex; flex-direction:column; gap:2px}
+.fx-team.me{border-color:var(--accent)}
+.fx-team.clock{background:var(--panel-2); border-color:var(--ink)}
+.fx-board tbody tr{cursor:pointer}
+.fx-board tbody tr:hover{background:var(--panel-2)}
+tr.me td{background:rgba(31,92,67,.08)}
+.fx-nom{background:var(--panel-2); padding:8px}
+.fx-names label{display:inline-flex; align-items:center; gap:4px}
