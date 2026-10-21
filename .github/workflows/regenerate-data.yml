@@ -30,10 +30,11 @@ name: Regenerate dashboard data.js
 # You can also point it at any other download URL via the cache_url input.
 
 on:
-  # daily in-season refresh (12:00 UTC = 8am ET, after the last West-coast games): real
-  # results + box scores from ESPN -> sequential filter -> game probs -> fantasy -> data.js
+  # daily in-season refresh at 2am ET: real results + box scores from ESPN -> sequential
+  # filter -> game probs -> fantasy -> data.js. Cron is UTC-only, so fire at 06:00 and 07:00
+  # UTC and let the `gate` job keep the one that is 2am in New York (EDT vs EST).
   schedule:
-    - cron: "0 12 * * *"
+    - cron: "0 6,7 * * *"
   workflow_dispatch:
     inputs:
       live_update:
@@ -60,7 +61,20 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.g.outputs.run }}
+    steps:
+      - id: g
+        run: |
+          h=$(TZ=America/New_York date +%H)
+          if [ "${{ github.event_name }}" != "schedule" ] || [ "$h" = "02" ]; then echo "run=true" >> "$GITHUB_OUTPUT"; else echo "run=false" >> "$GITHUB_OUTPUT"; fi
+          echo "New York hour: $h"
+
   regenerate:
+    needs: gate
+    if: ${{ needs.gate.outputs.run == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
