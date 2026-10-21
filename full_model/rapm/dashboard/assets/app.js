@@ -547,6 +547,22 @@
     panel.hidden = false;
   }
 
+  function liveBlock(seasons) {
+    const r = seasons.find((s) => s.live);
+    if (!r) return "";
+    const L = r.live, pct = (v) => (v == null ? "\u2014" : (100 * v).toFixed(1) + "%");
+    const mv = L.ratingNow != null && L.ratingOpen != null ? L.ratingNow - L.ratingOpen : null;
+    return `<div class="panel" style="margin:10px 0;padding:8px 10px"><b>${seasonLabel(r.season)} so far</b>
+      <span class="muted">(real games, ESPN box scores)</span><div class="ph-stat" style="margin-top:6px">
+      <div class="s"><div class="k">GP</div><div class="v">${L.gp}</div></div>
+      <div class="s"><div class="k">MPG</div><div class="v">${L.mpg}</div></div>
+      <div class="s"><div class="k">PTS / REB / AST</div><div class="v">${L.pts} / ${L.reb} / ${L.ast}</div></div>
+      <div class="s"><div class="k">STL / BLK / 3PM</div><div class="v">${L.stl} / ${L.blk} / ${L.tpm}</div></div>
+      <div class="s"><div class="k">FG / FT</div><div class="v">${pct(L.fg)} / ${pct(L.ft)}</div></div>
+      <div class="s"><div class="k">Avg game rating</div><div class="v">${L.gameRating != null ? L.gameRating : "\u2014"}</div></div>
+      <div class="s"><div class="k">In-season BOOKER</div><div class="v">${L.ratingNow != null ? signed(L.ratingNow, 2) : "\u2014"}${mv != null ? ` <small class="${mv >= 0 ? "pos" : "neg"}">(${signed(mv, 2)} since opener)</small>` : ""}</div></div>
+      </div></div>`;
+  }
   function openPlayer(pid) {
     const seasons = D.players.filter((p) => p.pid === pid).sort((a, b) => a.season - b.season);
     if (!seasons.length) return;
@@ -577,7 +593,7 @@
       `<span class="ph-meta">${teams.join(", ")} \u00b7 ${seasons.length} season${seasons.length > 1 ? "s" : ""}` +
       ` \u00b7 ${seasonLabel(seasons[0].season)}\u2013${seasonLabel(seasons[seasons.length - 1].season)}` +
       `${latest.scarcityPct != null ? ` \u00b7 <span title="profile rarity vs the league (PCA-space density)">rarity ${latest.scarcityPct}th %ile</span>` : ""}</span>` +
-      gradeHero +
+      gradeHero + liveBlock(seasons) +
       `<div class="ph-stat">` +
       `<div class="s"><div class="k">Total WAA</div><div class="v">${signed(totWaa, 1)}</div></div>` +
       `<div class="s"><div class="k">Peak WAA@32</div><div class="v">${peak32.waa32 != null ? signed(peak32.waa32, 1) : "\u2014"}</div></div>` +
@@ -2244,27 +2260,47 @@
     const hasR = gameRatings(FM.curGi).length > 0;
     const tabs = [];
     if (hasR) tabs.push(["ratings", "Player ratings"]);
+    if (boxOf(g)) tabs.push(["box", "Box score"]);
     tabs.push(["preview", g.hPts != null ? "Model view" : "Preview"], ["h2h", "H2H"]);
     if (!tabs.some((t) => t[0] === FM.mtab)) FM.mtab = tabs[0][0];
     $("#fm-match-tabs").innerHTML = tabs.map(([k, l]) =>
       `<button data-mt="${k}" class="${FM.mtab === k ? "on" : ""}">${l}</button>`).join("");
     const body = $("#fm-match-body");
     if (FM.mtab === "ratings") body.innerHTML = matchRatingsHtml(g);
+    else if (FM.mtab === "box") body.innerHTML = matchBoxHtml(g);
     else if (FM.mtab === "preview") body.innerHTML = matchPreviewHtml(g);
     else body.innerHTML = matchH2HHtml(g);
+  }
+  const boxOf = (g) => (D.box && D.box[String(g.id)]) || null;
+  function matchBoxHtml(g) {
+    const b = boxOf(g);
+    const side = (ab) => {
+      const rows = b.filter((r) => r[2] === ab && r[4] > 0).sort((x, y) => y[3] - x[3] || y[4] - x[4]);
+      const dnp = b.filter((r) => r[2] === ab && r[4] === 0).map((r) => r[1]);
+      const tot = (j) => rows.reduce((s, r) => s + r[j], 0);
+      return `<h3 class="sub-head">${tmono(ab)} ${teamName(ab)}</h3><div class="table-scroll"><table class="grid"><thead><tr>
+        <th class="col-text">Player</th><th>MIN</th><th>PTS</th><th>REB</th><th>AST</th><th>STL</th><th>BLK</th><th>3PM</th><th>FG</th><th>FT</th><th>TO</th></tr></thead><tbody>` +
+        rows.map((r) => `<tr class="rl-row" data-pid="${r[0]}"><td class="col-text">${r[1]}${r[3] ? "" : ' <span class="muted">bench</span>'}</td><td>${r[4]}</td><td><b>${r[5]}</b></td>
+          <td>${r[6]}</td><td>${r[7]}</td><td>${r[8]}</td><td>${r[9]}</td><td>${r[10]}</td><td>${r[11]}-${r[12]}</td><td>${r[13]}-${r[14]}</td><td>${r[15]}</td></tr>`).join("") +
+        `<tr><td class="col-text"><b>Team</b></td><td></td><td><b>${tot(5)}</b></td><td>${tot(6)}</td><td>${tot(7)}</td><td>${tot(8)}</td><td>${tot(9)}</td><td>${tot(10)}</td>
+          <td>${tot(11)}-${tot(12)}</td><td>${tot(13)}-${tot(14)}</td><td>${tot(15)}</td></tr></tbody></table></div>` +
+        (dnp.length ? `<p class="result-note">Did not play: ${dnp.join(", ")}</p>` : "");
+    };
+    return side(g.home) + side(g.away) + `<p class="result-note">Box score: ESPN.</p>`;
   }
   function matchRatingsHtml(g) {
     const rs = gameRatings(FM.curGi).slice().sort((a, b) => b[1] - a[1]);
     if (!rs.length) return `<p class="result-note">No player tracking for this game (partial 2026 stint feed).</p>`;
     const best = rs[0][0];
+    const bx = {}; (boxOf(g) || []).forEach((r) => (bx[r[0]] = r));
     const side = (ab) => {
-      const rows = rs.filter(([pid]) => (rowOf(pid) || {}).team === ab);
+      const rows = rs.filter(([pid]) => (bx[pid] ? bx[pid][2] : (rowOf(pid) || {}).team) === ab);
       return `<div class="rating-list" style="flex:1;min-width:260px">
         <div class="rl-head">${tmono(ab)} ${teamName(ab)}</div>` +
         rows.map(([pid, r]) => {
-          const p = rowOf(pid);
-          return `<div class="rl-row" data-pid="${pid}"><span class="nm">${p ? p.player : pid}</span>` +
-            `${pid === best ? `<span class="motm">MOTM</span>` : ""}<span class="mn"></span>${rbadge(r)}</div>`;
+          const p = rowOf(pid), b = bx[pid];
+          return `<div class="rl-row" data-pid="${pid}"><span class="nm">${p ? p.player : (b ? b[1] : pid)}</span>` +
+            `${pid === best ? `<span class="motm">MOTM</span>` : ""}<span class="mn">${b ? `${b[4]} min, ${b[5]}-${b[6]}-${b[7]}` : ""}</span>${rbadge(r)}</div>`;
         }).join("") + `</div>`;
     };
     return `<div style="display:flex;gap:12px;flex-wrap:wrap">${side(g.home)}${side(g.away)}</div>

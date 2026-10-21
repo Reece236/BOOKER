@@ -837,6 +837,62 @@ def build_draft(players, kpm, last_obs=2026):
                       "form": "a*(pick+k)^-b + c*(61-pick)/60 - a*(61+k)^-b"}, "floor": DRAFT_FLOOR}
 
 
+def attach_live(players, season):
+    """Live season (real ESPN data, data_ingest/fetch_espn_season.py):
+      * returns {GAME_ID: [[pid, name, team, starter, min, pts, reb, ast, stl, blk, tpm,
+                 fgm, fga, ftm, fta, tov]]} box scores for the match pages
+      * adds p["live"] to each `season` player row: real per-game averages, in-season
+        rating now (filter state entering his next game) vs the opening prior, and his
+        average game rating (0-10)."""
+    bp = CACHE / f"espn_box_{season}.csv"
+    if not bp.exists():
+        return {}
+    bx = pd.read_csv(bp)
+    box = {}
+    for r in bx.itertuples():
+        box.setdefault(str(int(r.GAME_ID)), []).append(
+            [int(r.PLAYER_ID), r.NAME, r.TEAM, int(r.starter), int(r.min), int(r.pts), int(r.reb), int(r.ast),
+             int(r.stl), int(r.blk), int(r.tpm), int(r.fgm), int(r.fga), int(r.ftm), int(r.fta), int(r.tov)])
+    played = bx[bx["min"] > 0]
+    agg = played.groupby("PLAYER_ID").agg(gp=("GAME_ID", "nunique"), mins=("min", "sum"), pts=("pts", "sum"),
+                                           reb=("reb", "sum"), ast=("ast", "sum"), stl=("stl", "sum"), blk=("blk", "sum"),
+                                           tpm=("tpm", "sum"), fgm=("fgm", "sum"), fga=("fga", "sum"),
+                                           ftm=("ftm", "sum"), fta=("fta", "sum"))
+    now, opening = {}, {}
+    sp = CACHE / f"seq_players_{season}.parquet"
+    if sp.exists():
+        S = pd.read_parquet(sp).sort_values("date")
+        S["v"] = S.o + S.d
+        played_dates = set(pd.read_csv(CACHE / f"games_{season}.csv").query("HOME_WIN == HOME_WIN").DATE)
+        last = max(played_dates) if played_dates else None
+        nxt = S[S.date > last] if last else S
+        now = nxt.groupby("PLAYER_ID").v.first().to_dict()
+        opening = S.groupby("PLAYER_ID").v.first().to_dict()
+    gr = {}
+    pg = CACHE / "player_game_ratings.csv"
+    if pg.exists():
+        g = pd.read_csv(pg)
+        g = g[g.season == season]
+        for pid, x in g.groupby("PLAYER_ID"):
+            m = float((x.g * x.poss).sum() / x.poss.sum())
+            gr[int(pid)] = round(float(np.clip(6.6 + 1.15 * np.arcsinh(m / 6.0), 2.0, 10.0)), 1)
+    n = 0
+    for p in players:
+        if p["season"] != season or p["pid"] not in agg.index:
+            continue
+        a = agg.loc[p["pid"]]; gp = float(a.gp)
+        p["live"] = {"gp": int(gp), "mpg": round(a.mins / gp, 1), "pts": round(a.pts / gp, 1),
+                     "reb": round(a.reb / gp, 1), "ast": round(a.ast / gp, 1), "stl": round(a.stl / gp, 1),
+                     "blk": round(a.blk / gp, 1), "tpm": round(a.tpm / gp, 1),
+                     "fg": (round(a.fgm / a.fga, 3) if a.fga else None), "ft": (round(a.ftm / a.fta, 3) if a.fta else None),
+                     "ratingNow": (round(now[p["pid"]], 2) if p["pid"] in now else None),
+                     "ratingOpen": (round(opening[p["pid"]], 2) if p["pid"] in opening else None),
+                     "gameRating": gr.get(p["pid"])}
+        n += 1
+    print(f"live {season}: box scores for {len(box)} games; season-so-far blocks on {n} player rows")
+    return box
+
+
 def build_fantasy():
     """Fantasy H2H 8-cat projections (forecast/fantasy_proj.py) for the Fantasy page:
     per-game lines at projected minutes, projected games, rookie flag."""
@@ -1411,6 +1467,7 @@ def main():
     calibration = load_calibration()
     recent_games = load_recent_games()
     games, player_games = load_games_and_ratings()
+    box = attach_live(players, 2027)          # real 2026-27 box scores + season-so-far blocks
     playoff_split = load_playoff_split()
     pred_bracket = load_pred_bracket()
     forecast_seasons = sorted({p["season"] for p in preseason})
@@ -1430,6 +1487,7 @@ def main():
         "recentGames": recent_games,
         "games": games,
         "playerGames": player_games,
+        "box": box,
         "playoffSplit": playoff_split,
         "predBracket": pred_bracket,
         "forecastSeasons": forecast_seasons,

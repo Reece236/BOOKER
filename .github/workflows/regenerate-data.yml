@@ -126,6 +126,7 @@ jobs:
           python data_ingest/fetch_espn_season.py 2027
           python -m forecast.sequential 2027
           python -m forecast.game_odds --live 2027
+          python -m forecast.game_ratings
           python -m forecast.inseason
           python -m forecast.fantasy_proj
 

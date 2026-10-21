@@ -25,7 +25,7 @@ OUT = CACHE / "player_game_ratings.csv"
 MIN_POSS_GAME = 10
 
 
-def build(seasons=tuple(range(2018, 2027))):
+def build(seasons=tuple(range(2018, 2028))):
     bk = pd.read_csv(RAPM / "booker_bookerformer_ratings.csv")
     frames = []
     for s in seasons:
@@ -41,6 +41,14 @@ def build(seasons=tuple(range(2018, 2027))):
             po = po[~po.GAME_ID.isin(set(st.GAME_ID))]
             st = pd.concat([st, po], ignore_index=True)
         imp = dict(zip(bk[bk.season == s].PLAYER_ID, bk[bk.season == s].impact_total))
+        # LIVE season (no season rating yet): anchor each player-game to the in-season filter's
+        # PRE-GAME rating (o+d, forecast.sequential) instead of a season rating; no season-mean
+        # anchoring. Unrated players fall back to the replacement-ish 0 baseline as before.
+        live = not imp and (CACHE / f"seq_players_{s}.parquet").exists()
+        gimp = {}
+        if live:
+            sp_ = pd.read_parquet(CACHE / f"seq_players_{s}.parquet")
+            gimp = {(int(g), int(p)): float(o + d_) for g, p, o, d_ in zip(sp_.GAME_ID, sp_.PLAYER_ID, sp_.o, sp_.d)}
         rows = {}
         for r in st.itertuples():
             try:
@@ -50,17 +58,18 @@ def build(seasons=tuple(range(2018, 2027))):
                 continue
             if len(hl) != 5 or len(al) != 5 or not (r.POSS == r.POSS) or r.POSS <= 0:
                 continue
-            ey = pi.HOME_COURT_ADV + sum(imp.get(p, 0.0) for p in hl) \
-                - sum(imp.get(p, 0.0) for p in al)
+            gid_ = int(r.GAME_ID)
+            ri = (lambda q: gimp.get((gid_, q), 0.0)) if live else (lambda q: imp.get(q, 0.0))
+            ey = pi.HOME_COURT_ADV + sum(ri(p) for p in hl) - sum(ri(p) for p in al)
             resid = float(r.Y) - ey
             for p in hl:
-                k = (int(r.GAME_ID), p)
+                k = (gid_, p)
                 w, g = rows.get(k, (0.0, 0.0))
-                rows[k] = (w + r.POSS, g + r.POSS * (imp.get(p, 0.0) + resid))
+                rows[k] = (w + r.POSS, g + r.POSS * (ri(p) + resid))
             for p in al:
-                k = (int(r.GAME_ID), p)
+                k = (gid_, p)
                 w, g = rows.get(k, (0.0, 0.0))
-                rows[k] = (w + r.POSS, g + r.POSS * (imp.get(p, 0.0) - resid))
+                rows[k] = (w + r.POSS, g + r.POSS * (ri(p) - resid))
         d = pd.DataFrame([{"season": s, "GAME_ID": gid, "PLAYER_ID": p,
                            "poss": w, "g": v / w}
                           for (gid, p), (w, v) in rows.items() if w >= MIN_POSS_GAME])
@@ -72,13 +81,19 @@ def build(seasons=tuple(range(2018, 2027))):
         # as the trajectory form dots. k = poss/(poss+P0), P0=150 -> a 70-poss
         # starter game keeps ~32% of its raw deviation.
         P0 = 150.0
-        base = d.PLAYER_ID.map(imp).fillna(0.0)
+        base = (pd.Series([gimp.get((int(g), int(p)), 0.0) for g, p in zip(d.GAME_ID, d.PLAYER_ID)], index=d.index)
+                if live else d.PLAYER_ID.map(imp).fillna(0.0))
         k = d.poss / (d.poss + P0)
         d["g"] = base + k * (d.g - base)
         # anchor: player-season poss-weighted mean of REGULAR-SEASON games ==
         # season impact_total. Playoff games take the same shift but are NOT
         # part of the anchor -- their deviation from the season rating is the
         # playoff-rise/fall signal we want to measure, not calibrate away.
+        if live:                                   # no season rating to anchor to yet
+            d["g"] = d.g.clip(-45, 45).round(1)
+            frames.append(d)
+            print(f"  {s}: {len(d)} player-games, {d.GAME_ID.nunique()} games (live: pre-game filter anchor)")
+            continue
         d["_reg"] = ~d.GAME_ID.astype(str).str.startswith("4")
         d["_wg"] = d.g * d.poss
         reg = d[d._reg]
