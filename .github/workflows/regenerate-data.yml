@@ -30,8 +30,17 @@ name: Regenerate dashboard data.js
 # You can also point it at any other download URL via the cache_url input.
 
 on:
+  # daily in-season refresh (12:00 UTC = 8am ET, after the last West-coast games): real
+  # results + box scores from ESPN -> sequential filter -> game probs -> fantasy -> data.js
+  schedule:
+    - cron: "0 12 * * *"
   workflow_dispatch:
     inputs:
+      live_update:
+        description: "Ingest the latest real 2026-27 results from ESPN and update in-season outputs."
+        type: boolean
+        required: false
+        default: true
       cache_url:
         description: "Direct download URL for the cache archive (.tar.gz or .tar.zst). Leave blank to use the 'cache-latest' release asset."
         required: false
@@ -92,6 +101,19 @@ jobs:
           fi
           echo "cache files: $(ls full_model/rapm/cache | wc -l)"
           test -n "$(ls -A full_model/rapm/cache)" || { echo "::error::cache is empty after extraction"; exit 1; }
+
+      # LIVE SEASON (ESPN is reachable from runners; stats.nba.com is not). Odds files are not in
+      # the public cache, so game probabilities use game_odds --live (no market refit).
+      - name: Live season update (real results, box scores, in-season model)
+        if: ${{ github.event_name == 'schedule' || inputs.live_update }}
+        working-directory: full_model/rapm
+        run: |
+          set -euo pipefail
+          python data_ingest/fetch_espn_season.py 2027
+          python -m forecast.sequential 2027
+          python -m forecast.game_odds --live 2027
+          python -m forecast.inseason
+          python -m forecast.fantasy_proj
 
       - name: Re-project minutes shares
         if: ${{ inputs.run_preseason }}

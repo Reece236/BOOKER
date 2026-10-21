@@ -13,3 +13,4 @@ cache/bookerformer_diag
 cache/bias_audit_panel.csv
 cache/*.bak*
 cache/players_2027_espn_raw.csv.tmp
+cache/espn_games_*

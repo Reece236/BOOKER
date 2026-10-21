@@ -211,8 +211,15 @@ class BookerData:
 
         # fill actual wins from the schedule for seasons absent from the legacy
         # team_predictions file (e.g. the live 2025-26 season)
+        # PARTIAL = seasons in progress (some regular-season games unplayed). Their
+        # wins-to-date are NOT season outcomes: never put them in ACTUAL_WINS (backtests,
+        # net->wins fits, preseason RMSE would read 1-0 records as final).
+        self.PARTIAL = set()
         for s, g in self.GAMES.items():
             reg = g[g.get("SEASON_TYPE", "Regular Season") == "Regular Season"]
+            if reg.HOME_WIN.isna().any():
+                self.PARTIAL.add(s)
+                continue
             wins = {}
             for h, a, hw in zip(reg.HOME, reg.AWAY, reg.HOME_WIN):
                 if pd.isna(hw):

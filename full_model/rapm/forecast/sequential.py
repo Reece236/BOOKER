@@ -431,7 +431,7 @@ def main(seasons=range(2019, 2028)):
         proj = allp[allp.season == s]
         repl = float(proj.repl.iloc[0])
         log = None
-        if s not in data.STINTS:        # live/forward season: use collected injury reports
+        if s not in data.STINTS or s in data.PARTIAL:   # live / in-progress: collected injury reports
             try:
                 from . import injury_availability as ia
                 log = ia.load_log()

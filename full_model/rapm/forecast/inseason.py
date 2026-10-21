@@ -26,7 +26,7 @@ from scipy.stats import norm
 from . import player_impacts as pi
 
 CACHE = pi.CACHE
-SEASONS = range(2018, 2027)   # needs cache/seq_team_daily_{s}.csv
+SEASONS = range(2018, 2028)   # needs cache/seq_team_daily_{s}.csv (2027 = in progress)
 N_CUTOFFS = 10            # evenly spaced snapshots through the season
 
 
@@ -43,6 +43,13 @@ def minutes_to_date(stints, players):
 
 def cutoff_dates(reg):
     dates = sorted(reg.DATE.unique())
+    if reg.HOME_WIN.isna().any():                 # season in progress: cutoffs only up to the
+        played = sorted(reg[reg.HOME_WIN.notna()].DATE.unique())   # day after the last result
+        if not played:
+            return []
+        nxt = [d for d in dates if d > played[-1]]
+        cut = [d for d in played if d != played[0]][::max(1, len(played) // N_CUTOFFS)]
+        return sorted(set(cut + nxt[:1]))
     if len(dates) < N_CUTOFFS:
         return dates
     qs = np.linspace(1.0 / N_CUTOFFS, 1.0, N_CUTOFFS)

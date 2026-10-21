@@ -36,6 +36,8 @@ Outputs:
     cache/game_metrics.csv                per-season + pooled skill vs market
     cache/game_calibration.csv            pooled reliability-curve bins
 """
+import sys
+
 import numpy as np
 import pandas as pd
 
@@ -422,5 +424,48 @@ def season_subset(allg, s):
     return allg[allg.season == s].copy()
 
 
+def live_update(season):
+    """In-season refresh WITHOUT market data (CI: the public cache carries no odds).
+    Refits the walk-forward win-prob models on the cached historical feature table
+    (game_predictions_all.csv, seasons < `season`) and rescores `season`: completed games
+    get pre-game + actives probabilities (published = actives, as in main), unplayed games
+    the pre-game probability. Historical files and metrics are left untouched."""
+    hist = pd.read_csv(CACHE / "game_predictions_all.csv")
+    hist = hist[hist.season < season]
+    data = pi.BookerData()
+    wp = fit_winprob(hist)
+    wa = fit_winprob(hist.drop(columns=["margin"]).rename(columns={"margin_act": "margin"}))
+    ws = fit_winprob(hist.drop(columns=["margin"]).rename(columns={"margin_strict": "margin"}))
+    out = []
+    done = season_margins_seq(data, season)
+    if done is not None and len(done):
+        done["model_p_home_pregame"] = wp.predict_proba(done[FEATS].values)[:, 1]
+        for col, m_ in (("margin_act", wa), ("margin_strict", ws)):
+            ok = done[col].notna()
+            res = "model_p_home_actives" if col == "margin_act" else "model_p_home_strict"
+            done[res] = np.nan
+            done.loc[ok, res] = m_.predict_proba(done.loc[ok, [col] + FEATS[1:]].values)[:, 1]
+        done["model_p_home"] = done.model_p_home_actives.fillna(done.model_p_home_pregame)
+        done["prob_basis"] = np.where(done.model_p_home_actives.notna(), "actives", "pregame")
+        done["calib_in_sample"] = 0
+        out.append(done)
+    fut = season_margins_seq(data, season, future=True)
+    if fut is not None and len(fut):
+        fut["model_p_home"] = fut["model_p_home_pregame"] = wp.predict_proba(fut[FEATS].values)[:, 1]
+        fut["prob_basis"] = "pregame"
+        out.append(fut)
+    if not out:
+        print(f"live_update {season}: nothing to score"); return
+    G = pd.concat(out, ignore_index=True)
+    G["market_p_home"] = np.nan
+    G.to_csv(CACHE / f"game_predictions_{season}.csv", index=False)
+    n_done = int(G.home_win.notna().sum())
+    ll_ = metrics(G.dropna(subset=["home_win"]).model_p_home, G.dropna(subset=["home_win"]).home_win)[0] if n_done else float("nan")
+    print(f"live_update {season}: {n_done} completed games (log-loss {ll_:.4f}), "
+          f"{int(G.home_win.isna().sum())} upcoming -> game_predictions_{season}.csv")
+
+
 if __name__ == "__main__":
+    if len(sys.argv) > 2 and sys.argv[1] == "--live":
+        live_update(int(sys.argv[2])); sys.exit(0)
     main()

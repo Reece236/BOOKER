@@ -261,7 +261,7 @@ def run_season(data, season, ratings=None, net_scale=1.0, precomp=None):
     teams, wins, net_s = simulate(nets, sched, net_sd=net_sd)
     p_playoff = playoff_odds(teams, wins)
     p_champ = title_odds(teams, wins, net_s, top7=top7_adjust(season))
-    actual = {ab: data.ACTUAL_WINS.get((ab, season)) for ab in teams}
+    actual = {ab: (None if season in data.PARTIAL else data.ACTUAL_WINS.get((ab, season))) for ab in teams}
     rows = []
     for i, t in enumerate(teams):
         w = wins[:, i]

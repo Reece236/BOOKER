@@ -81,19 +81,33 @@
         if (!W[k]) {
           const s = new Date(mon); s.setUTCDate(mon.getUTCDate() + 7 * k);
           const e = new Date(s); e.setUTCDate(s.getUTCDate() + 6);
-          W[k] = { start: s.toISOString().slice(0, 10), end: e.toISOString().slice(0, 10), games: {} };
+          W[k] = { start: s.toISOString().slice(0, 10), end: e.toISOString().slice(0, 10), games: {}, dates: {} };
         }
-        [x.home, x.away].forEach((t) => (W[k].games[t] = (W[k].games[t] || 0) + 1));
+        [x.home, x.away].forEach((t) => { W[k].games[t] = (W[k].games[t] || 0) + 1; (W[k].dates[t] = W[k].dates[t] || []).push(x.date); });
       });
       return W.filter(Boolean).map((w, i) => ({ ...w, n: i + 1 }));
     },
-    weekLine(players, week) {
+    /* Weekly team line. opts.actual = {pid: [[date, min, fgm, fga, ftm, fta, tpm, reb, ast, stl, blk, pts]]},
+       opts.last = last date with real results: games on/before it count as REAL (fixed, no
+       variance); later games in the week are PROJECTED (players listed out in opts.out get 0). */
+    weekLine(players, week, opts) {
+      const o = opts || {};
       const L = { fgm: 0, fga: 0, ftm: 0, fta: 0, tpm: 0, reb: 0, ast: 0, stl: 0, blk: 0, pts: 0, gp: 0,
-                  v: { tpm: 0, reb: 0, ast: 0, stl: 0, blk: 0, pts: 0 } };
+                  rgp: 0, pfga: 0, pfta: 0, v: { tpm: 0, reb: 0, ast: 0, stl: 0, blk: 0, pts: 0 } };
+      const K = ["fgm", "fga", "ftm", "fta", "tpm", "reb", "ast", "stl", "blk", "pts"];
       players.forEach((p) => {
-        const gp = (week.games[p.t] || 0) * Math.min(1, p.g / 82);
+        let rem = week.games[p.t] || 0;
+        if (o.last && week.dates) {
+          rem = (week.dates[p.t] || []).filter((d) => d > o.last).length;
+          (o.actual && o.actual[p.pid] || []).forEach((r) => {
+            if (r[0] < week.start || r[0] > week.end || r[0] > o.last) return;
+            K.forEach((k, j) => (L[k] += r[j + 2])); L.gp += 1; L.rgp += 1;
+          });
+        }
+        const gp = (o.out && o.out[p.pid]) ? 0 : rem * Math.min(1, p.g / 82);
         L.gp += gp;
-        ["fgm", "fga", "ftm", "fta", "tpm", "reb", "ast", "stl", "blk", "pts"].forEach((k) => (L[k] += p[k] * gp));
+        K.forEach((k) => (L[k] += p[k] * gp));
+        L.pfga += p.fga * gp; L.pfta += p.fta * gp;
         Object.keys(DISP).forEach((k) => (L.v[k] += DISP[k] * p[k] * gp));
       });
       return L;
@@ -102,7 +116,8 @@
       if (c === "fg" || c === "ft") {
         const m = c === "fg" ? L.fgm : L.ftm, a = c === "fg" ? L.fga : L.fta;
         const p = a > 0 ? m / a : 0;
-        return [p, a > 0 ? Math.sqrt(PCT_OD * p * (1 - p) / a) : 0.05];
+        const pa = L.pfga == null ? a : (c === "fg" ? L.pfga : L.pfta);     // only projected shots are uncertain
+        return [p, a > 0 ? Math.sqrt(PCT_OD * p * (1 - p) * Math.max(pa, 0) / (a * a)) + 1e-6 : 0.05];
       }
       return [L[c], Math.sqrt(Math.max(L.v[c], 1e-6))];
     },
@@ -159,7 +174,7 @@
   const KEY = "booker_fantasy_v1";
   const $ = (s, r = document) => r.querySelector(s);
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-  let S = null, P = [], Z = [], byPid = {}, WEEKS = [];
+  let S = null, P = [], Z = [], byPid = {}, WEEKS = [], ACT = {}, LAST = null, INJ = {};
 
   function defaults() {
     return { v: 1, phase: "setup", teams: 10, budget: 200, roster: 13, mode: "auction", my: 0,
@@ -176,6 +191,7 @@
     P = D.fantasy.players.slice();
     P.forEach((p, i) => (byPid[p.pid] = i));
     WEEKS = FX.weeks(D.games || [], D.fantasy.season);
+    ACT = D.fantasy.actual || {}; LAST = D.fantasy.lastActual || null; INJ = D.fantasy.injuries || {};
     S = load();
     recomputeZ();
     return true;
@@ -279,13 +295,23 @@
   function playerRow(i, V, own, extra) {
     const p = P[i], z = Z[i], t = own[p.pid];
     return `<tr class="${t != null ? "muted" : ""}" data-i="${i}">
-      <td class="col-text"><b>${esc(p.n)}</b>${p.rk ? ' <span class="muted">R</span>' : ""}<br><small class="muted">${p.t} ${esc(p.pos)} ${p.age || ""}</small></td>
+      <td class="col-text"><b>${esc(p.n)}</b>${p.rk ? ' <span class="muted">R</span>' : ""}${injTag(p.pid)}<br><small class="muted">${p.t} ${esc(p.pos)} ${p.age || ""}${soFar(p.pid)}</small></td>
       <td>${fmt(p.g, 0)}</td><td>${fmt(p.mpg, 1)}</td>
       <td>${fmt(100 * p.fgm / Math.max(p.fga, 1e-6), 1)}</td><td>${fmt(100 * p.ftm / Math.max(p.fta, 1e-6), 1)}</td>
       <td>${fmt(p.tpm)}</td><td>${fmt(p.reb)}</td><td>${fmt(p.ast)}</td><td>${fmt(p.stl)}</td><td>${fmt(p.blk)}</td><td>${fmt(p.pts)}</td>
       ${CATS.map((c) => zcell(z[c])).join("")}
       <td><b>${fmt(FX.zsum(z, weights(null)), 2)}</b></td>
       <td>$${fmt(V.base[i], 0)}</td><td>${t != null ? "-" : "$" + fmt(V.live[i], 0)}</td><td>${t != null ? esc(S.names[t]) : "$" + fmt(V.fit[i], 0)}</td>${extra || ""}</tr>`;
+  }
+  function injTag(pid) {
+    const v = INJ[pid]; if (!v) return "";
+    const d = String(v[0]).toLowerCase(), k = d === "out" ? "OUT" : d === "doubtful" ? "D" : d === "questionable" ? "Q" : d.slice(0, 3).toUpperCase();
+    return ` <span class="neg" title="${esc(v[1])} (${esc(v[2])})">${k}</span>`;
+  }
+  function soFar(pid) {
+    const g = ACT[pid]; if (!g || !g.length) return "";
+    const s = (j) => g.reduce((a, r) => a + r[j], 0) / g.length;
+    return ` | 26-27: ${g.length} GP, ${s(11).toFixed(1)} pts ${s(7).toFixed(1)} reb ${s(8).toFixed(1)} ast`;
   }
   const HEAD = `<th class="col-text">Player</th><th>G</th><th>MPG</th><th>FG%</th><th>FT%</th><th>3PM</th><th>REB</th><th>AST</th><th>STL</th><th>BLK</th><th>PTS</th>` +
     CATS.map((c) => `<th>z${CAT_LABEL[c]}</th>`).join("") + `<th data-k="z">Z</th><th data-k="base">Base $</th><th data-k="live">Live $</th><th data-k="fit">Fit $</th>`;
@@ -348,12 +374,52 @@
   /* ------------------------------------------------------------------ season */
   function startSeason() {
     S.rosters = rosters().map((r) => r.slice());
-    const regWeeks = Math.max(1, WEEKS.length - S.playoffWeeks);
+    // the league starts in the current NBA week (weeks already finished before the draft are not played)
+    const today = new Date().toISOString().slice(0, 10);
+    const cur = WEEKS.findIndex((w) => w.end >= today);
+    S.startWeek = cur < 0 ? 1 : cur + 1;
+    const regWeeks = Math.max(1, WEEKS.length - S.playoffWeeks - S.startWeek + 1);
     S.schedule = FX.roundRobin(nT(), regWeeks);
     S.results = {}; S.week = 1; S.phase = "season"; S.view = "season";
     save(); render();
   }
   const teamPlayers = (t) => S.rosters[t].map((pid) => P[byPid[pid]]).filter(Boolean);
+  const WK = (k) => WEEKS[(S.startWeek || 1) - 1 + k - 1];          // league week k -> NBA week
+  function wkState(w) {
+    if (!w || !LAST) return "future";
+    if (w.end <= LAST) return "final";
+    return w.start <= LAST ? "live" : "future";
+  }
+  function outMap(w) {        // listed OUT: no games for the rest of this week and next week
+    const o = {};
+    if (!w || !LAST) return o;
+    const horizon = new Date(LAST + "T12:00:00Z"); horizon.setUTCDate(horizon.getUTCDate() + 7);
+    if (w.start > horizon.toISOString().slice(0, 10)) return o;
+    Object.entries(INJ).forEach(([pid, v]) => { if (String(v[0]).toLowerCase() === "out") o[+pid] = true; });
+    return o;
+  }
+  const line = (t, w) => FX.weekLine(teamPlayers(t), w, { actual: ACT, last: LAST, out: outMap(w) });
+  function realResult(LA, LB) {             // a finished week: compare the real totals
+    const r = { a: {}, b: {}, wA: 0, wB: 0, t: 0, real: true };
+    CATS.forEach((c) => {
+      const [xa] = FX.catDist(LA, c), [xb] = FX.catDist(LB, c);
+      const d = c === "fg" || c === "ft" ? 3 : 0;
+      r.a[c] = +xa.toFixed(d); r.b[c] = +xb.toFixed(d);
+      if (r.a[c] > r.b[c]) r.wA++; else if (r.b[c] > r.a[c]) r.wB++; else r.t++;
+    });
+    return r;
+  }
+  function finalizeReal() {                 // score finished weeks from real box scores, once
+    let changed = false;
+    (S.schedule || []).forEach((pairs, j) => {
+      const k = j + 1, w = WK(k);
+      if (wkState(w) !== "final") return;
+      if (S.results[k] && S.results[k].every((g) => g.r.real)) return;
+      S.results[k] = pairs.map(([A, B]) => ({ A, B, r: realResult(line(A, w), line(B, w)) }));
+      changed = true;
+    });
+    if (changed) save();
+  }
   function standings() {
     const st = Array.from({ length: nT() }, (_, t) => ({ t, w: 0, l: 0, d: 0, mw: 0 }));
     Object.values(S.results).forEach((games) => games.forEach((g) => {
@@ -364,17 +430,20 @@
     return st.sort((a, b) => (b.w + 0.5 * b.d) / Math.max(1, b.w + b.l + b.d) - (a.w + 0.5 * a.d) / Math.max(1, a.w + a.l + a.d) || b.w - a.w);
   }
   function simWeek(k) {
-    const wk = WEEKS[k - 1], pairs = S.schedule[k - 1] || [];
+    const wk = WK(k), pairs = S.schedule[k - 1] || [];
+    if (wkState(wk) === "final") return;                  // real results, never simulated
     const rng = FX.mulberry(S.seed * 1000 + k);
-    S.results[k] = pairs.map(([A, B]) => ({ A, B, r: FX.simulate(FX.weekLine(teamPlayers(A), wk), FX.weekLine(teamPlayers(B), wk), rng) }));
+    S.results[k] = pairs.map(([A, B]) => ({ A, B, r: FX.simulate(line(A, wk), line(B, wk), rng) }));
   }
   function renderSeason() {
     if (!S.schedule) { $("#fx-body").innerHTML = `<p class="note">Finish the draft to start the season.</p>`; return; }
-    const reg = S.schedule.length, k = Math.min(Math.max(1, S.week), reg), wk = WEEKS[k - 1];
+    finalizeReal();
+    const reg = S.schedule.length, k = Math.min(Math.max(1, S.week), reg), wk = WK(k);
+    const state = wkState(wk);
     const pairs = S.schedule[k - 1] || [], played = S.results[k];
     const st = standings();
     const mm = pairs.map(([A, B], j) => {
-      const LA = FX.weekLine(teamPlayers(A), wk), LB = FX.weekLine(teamPlayers(B), wk);
+      const LA = line(A, wk), LB = line(B, wk);
       const m = FX.matchup(LA, LB), r = played ? played[j].r : null;
       const exp = CATS.reduce((s, c) => s + m[c].pA, 0);
       const cell = (c, side) => {
@@ -383,7 +452,10 @@
         const win = r ? (side === "a" ? r.a[c] > r.b[c] : r.b[c] > r.a[c]) : (side === "a" ? m[c].pA > 0.5 : m[c].pA < 0.5);
         return `<td class="${win ? "pos" : ""}">${fmt(v, d)}</td>`;
       };
-      return `<h3 class="sub-head">${esc(S.names[A])} vs ${esc(S.names[B])} <span class="muted">${r ? `final ${r.wA}-${r.wB}-${r.t}` : `projected ${fmt(exp, 1)}-${fmt(8 - exp, 1)} cats; games ${fmt(LA.gp, 0)} vs ${fmt(LB.gp, 0)}`}</span></h3>
+      const tag = r ? (r.real ? `final (real) ${r.wA}-${r.wB}-${r.t}` : `simulated ${r.wA}-${r.wB}-${r.t}`)
+        : state === "live" ? `LIVE: real through ${LAST} + projected rest; expected ${fmt(exp, 1)}-${fmt(8 - exp, 1)} cats; games ${LA.rgp}+${fmt(LA.gp - LA.rgp, 0)} vs ${LB.rgp}+${fmt(LB.gp - LB.rgp, 0)}`
+        : `projected ${fmt(exp, 1)}-${fmt(8 - exp, 1)} cats; games ${fmt(LA.gp, 0)} vs ${fmt(LB.gp, 0)}`;
+      return `<h3 class="sub-head">${esc(S.names[A])} vs ${esc(S.names[B])} <span class="muted">${tag}</span></h3>
         <div class="table-scroll"><table class="grid"><thead><tr><th class="col-text">Team</th>${CATS.map((c) => `<th>${CAT_LABEL[c]}</th>`).join("")}</tr></thead><tbody>
         <tr><td class="col-text">${esc(S.names[A])}</td>${CATS.map((c) => cell(c, "a")).join("")}</tr>
         <tr><td class="col-text">${esc(S.names[B])}</td>${CATS.map((c) => cell(c, "b")).join("")}</tr>
@@ -396,17 +468,19 @@
       <div class="controls"><button class="link-btn" id="fx-prev">previous</button>
         <b>Week ${k} of ${reg}</b> <span class="muted">${wk ? `${wk.start} to ${wk.end}` : ""}</span>
         <button class="link-btn" id="fx-next">next</button>
-        <button class="btn" id="fx-sim" ${played ? "disabled" : ""}>Simulate week</button>
+        <button class="btn" id="fx-sim" ${played || state === "final" ? "disabled" : ""}>Simulate week</button>
         <button class="link-btn" id="fx-simall">simulate rest of regular season</button>
-        <button class="link-btn" id="fx-unsim" ${played ? "" : "disabled"}>clear this week</button></div>
-      <p class="note">Weekly projections count each player's team games that week times his projected availability.
-        Simulated results draw from the same distributions (category sd from per-game overdispersion).${bye.length ? ` Bye: ${bye.map((t) => esc(S.names[t])).join(", ")}.` : ""}</p>
+        <button class="link-btn" id="fx-unsim" ${played && !played[0].r.real ? "" : "disabled"}>clear simulation</button></div>
+      <p class="note">${LAST ? `Real box scores through <b>${LAST}</b>: finished weeks are scored from real stats (with the rosters at the time they finished);
+        the live week adds real games so far to projections for the rest. ` : ""}Projections count each player's remaining team games times his
+        projected availability; players listed OUT on the latest injury report get no games this week or next.
+        Simulated weeks draw from the same distributions (category sd from per-game overdispersion).${bye.length ? ` Bye: ${bye.map((t) => esc(S.names[t])).join(", ")}.` : ""}</p>
       ${mm}
       <h3 class="sub-head">Standings (category wins)</h3>
       <div class="table-scroll"><table class="grid"><thead><tr><th>#</th><th class="col-text">Team</th><th>W</th><th>L</th><th>T</th><th>Pct</th><th>Matchups won</th></tr></thead><tbody>
       ${st.map((r, i) => `<tr class="${r.t === S.my ? "me" : ""}"><td>${i + 1}${i < S.playoffTeams ? "*" : ""}</td><td class="col-text">${esc(S.names[r.t])}</td><td>${r.w}</td><td>${r.l}</td><td>${r.d}</td>
         <td>${fmt((r.w + 0.5 * r.d) / Math.max(1, r.w + r.l + r.d), 3)}</td><td>${r.mw}</td></tr>`).join("")}</tbody></table></div>
-      <p class="note muted">* playoff position (${S.playoffTeams} teams${WEEKS.length ? `, final ${S.playoffWeeks} weeks` : ""}).${regDone ? " Regular season complete." : ""}</p>
+      <p class="note muted">* playoff position (${S.playoffTeams} teams, final ${S.playoffWeeks} weeks). League weeks start ${WK(1) ? WK(1).start : ""}.${regDone ? " Regular season complete." : ""}</p>
       ${regDone ? renderPlayoffs(st) : ""}`;
     $("#fx-prev").onclick = () => { S.week = Math.max(1, k - 1); save(); renderSeason(); };
     $("#fx-next").onclick = () => { S.week = Math.min(reg, k + 1); save(); renderSeason(); };
@@ -417,19 +491,20 @@
   function renderPlayoffs(st) {
     let seeds = st.slice(0, S.playoffTeams).map((r) => r.t);
     const out = [];
-    let w = S.schedule.length;
-    while (seeds.length > 1 && w < WEEKS.length) {
-      const wk = WEEKS[w], rng = FX.mulberry(S.seed * 7777 + w), nxt = [];
+    let w = S.schedule.length + 1;
+    while (seeds.length > 1 && WK(w)) {
+      const wk = WK(w), rng = FX.mulberry(S.seed * 7777 + w), nxt = [];
       for (let i = 0; i < seeds.length / 2; i++) {
         const A = seeds[i], B = seeds[seeds.length - 1 - i];
-        const r = FX.simulate(FX.weekLine(teamPlayers(A), wk), FX.weekLine(teamPlayers(B), wk), rng);
+        const LA = line(A, wk), LB = line(B, wk);
+        const r = wkState(wk) === "final" ? realResult(LA, LB) : FX.simulate(LA, LB, rng);
         const win = r.wA >= r.wB ? A : B;
-        out.push(`Week ${w + 1}: ${esc(S.names[A])} ${r.wA}-${r.wB}-${r.t} ${esc(S.names[B])}`);
+        out.push(`${wk.start}: ${esc(S.names[A])} ${r.wA}-${r.wB}-${r.t} ${esc(S.names[B])}${r.real ? " (real)" : ""}`);
         nxt.push(win);
       }
       seeds = nxt; w++;
     }
-    return `<h3 class="sub-head">Playoffs (simulated)</h3><p class="note">${out.join("<br>")}${seeds.length === 1 ? `<br><b>Champion: ${esc(S.names[seeds[0]])}</b>` : ""}</p>`;
+    return `<h3 class="sub-head">Playoffs</h3><p class="note">${out.join("<br>")}${seeds.length === 1 ? `<br><b>Champion: ${esc(S.names[seeds[0]])}</b>` : ""}</p>`;
   }
 
   /* ------------------------------------------------------------------ rosters, FA, trades */

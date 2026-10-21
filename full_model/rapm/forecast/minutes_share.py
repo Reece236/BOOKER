@@ -253,7 +253,8 @@ def _model():
 # ------------------------------------------------------------------- build
 def build(write_live=True, verbose=True):
     ctx = _Ctx()
-    obs = sorted(s for s in ctx.tgs if s - 1 in ctx.pl and (ctx.rat.season == s - 1).any())
+    obs = sorted(s for s in ctx.tgs if s - 1 in ctx.pl and (ctx.rat.season == s - 1).any()
+                 and s not in ctx.data.PARTIAL)          # in-progress season = live, not a target
     panel = {}
     for s in obs:
         X = features(ctx, s, opening_roster(ctx.tgs[s], ctx.tgs.get(s - 1)))
@@ -285,7 +286,7 @@ def build(write_live=True, verbose=True):
                           "rmse_naive_min": np.sqrt(np.mean((X.naive - X.y) ** 2)) * mm})
     # live season(s): rosters from players_{s}.csv where no stints exist yet
     for s in sorted(ctx.data.PLAYERS):
-        if s in ctx.tgs or s - 1 not in ctx.pl:
+        if (s in ctx.tgs and s not in ctx.data.PARTIAL) or s - 1 not in ctx.pl:
             continue
         pl = ctx.data.PLAYERS[s]
         tm = ctx.data.TEAMS.get(s)

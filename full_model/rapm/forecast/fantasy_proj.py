@@ -27,7 +27,8 @@ COUNT = {"pts": "total_points", "reb": "total_totalRb", "ast": "total_assists", 
 MAKES = {"fg": ("total_fieldGoals", "total_fieldAttempts"), "ft": ("total_ft", "total_ftAttempts")}
 POSG = {"PG": "G", "SG": "G", "SF": "W", "PF": "B", "C": "B"}
 W = (5.0, 4.0, 3.0)
-ROOKIE_MULT = 0.85     # first-year counting rates vs the position-group league rate
+ROOKIE_MULT = 0.85
+W_CUR = 6.0            # live season-to-date weight per minute (vs 5/4/3 for the prior seasons)     # first-year counting rates vs the position-group league rate
 K_GRID = (150, 300, 600, 1200, 2400)
 KP_GRID = (50, 150, 400, 1000)
 
@@ -51,16 +52,19 @@ def _league(b, s):
     return lr
 
 
-def project(b, target, K, KP, age_c=None):
-    """Per-minute rates + pcts for every player with any of the 3 prior seasons."""
+def project(b, target, K, KP, age_c=None, cur=False):
+    """Per-minute rates + pcts for every player with any of the 3 prior seasons. cur=True
+    (LIVE season only, never in validation) also uses the target season's games to date,
+    weighted W_CUR per minute -- rest-of-season rates track the season as it unfolds."""
     lr = _league(b, target - 1)
-    prior = b[b.season.between(target - 3, target - 1)]
+    prior = b[b.season.between(target - 3, target if cur else target - 1)]
     rows = []
     for nm, d in prior.groupby("nm"):
         wts = {target - 1 - i: W[i] for i in range(3)}
+        wts[target] = W_CUR
         d = d.assign(w=d.season.map(wts))
         wm = (d.w * d.minutesPlayed).sum()
-        last = d.sort_values("season").iloc[-1]
+        last = d[d.season < target].sort_values("season").iloc[-1] if (d.season < target).any() else d.iloc[-1]
         g = last.pg
         r = {"nm": nm, "player": last.playerName, "pos": last.position, "pg": g,
              "age": float(last.age) + (target - int(last.season)), "wmin": wm}
@@ -141,12 +145,39 @@ def validate(b):
     return K, KP
 
 
+def _current_box(season, b):
+    """ESPN season-to-date totals (data_ingest/fetch_espn_season.py) in the bbref schema."""
+    p = CACHE / f"espn_box_{season}.csv"
+    if not p.exists():
+        return None
+    e = pd.read_csv(p)
+    e = e[e["min"] > 0]
+    if e.empty:
+        return None
+    g = e.groupby("NAME").agg(games=("GAME_ID", "nunique"), minutesPlayed=("min", "sum"), total_points=("pts", "sum"),
+                              total_totalRb=("reb", "sum"), total_assists=("ast", "sum"), total_steals=("stl", "sum"),
+                              total_blocks=("blk", "sum"), total_threeFg=("tpm", "sum"), total_fieldAttempts=("fga", "sum"),
+                              total_fieldGoals=("fgm", "sum"), total_ftAttempts=("fta", "sum"), total_ft=("ftm", "sum"),
+                              total_turnovers=("tov", "sum")).reset_index().rename(columns={"NAME": "playerName"})
+    g["nm"] = g.playerName.map(pi.norm_name)
+    last = b.sort_values("season").drop_duplicates("nm", keep="last").set_index("nm")
+    g["position"] = g.nm.map(last.position).fillna("SF")
+    g["pg"] = g.nm.map(last.pg).fillna("W")
+    g["age"] = g.nm.map(last.age + (season - last.season)).fillna(21.0)
+    g["season"] = season
+    return g
+
+
 def build(write=True):
     b = _box()
     K, KP = validate(b)
     age_c = fit_age(b, range(2019, 2027), K, KP)
     print("age multiplier per year (x(age-27)):", {k: round(v, 4) for k, v in age_c.items()})
-    P = project(b, 2027, K, KP, age_c)
+    cur = _current_box(2027, b)
+    if cur is not None:
+        b = pd.concat([b, cur], ignore_index=True)
+        print(f"live 2027: season-to-date box for {len(cur)} players folded in (weight {W_CUR}/min)")
+    P = project(b, 2027, K, KP, age_c, cur=cur is not None)
     m = pd.read_csv(CACHE / "minutes_proj.csv")
     m = m[m.season == 2027].copy()
     m["nm"] = m.name.map(pi.norm_name)
@@ -172,7 +203,6 @@ def build(write=True):
     # produce below league rate); flagged so the UI can mark them
     rk = out.player.isna()
     lr = _league(b, 2026)
-    pos_of = {}
     mast = b.sort_values("season").drop_duplicates("nm", keep="last").set_index("nm").position
     for i in out.index[rk]:
         g = POSG.get(str(mast.get(out.at[i, "nm"], "SF")).split("-")[0], "W")

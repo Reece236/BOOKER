@@ -851,9 +851,41 @@ def build_fantasy():
              "pts": r3(r.pts_g), "reb": r3(r.reb_g), "ast": r3(r.ast_g), "stl": r3(r.stl_g), "blk": r3(r.blk_g),
              "tpm": r3(r.tpm_g), "fgm": r3(r.fgm_g), "fga": r3(r.fga_g), "ftm": r3(r.ftm_g), "fta": r3(r.fta_g),
              "rk": int(r.rookie)} for r in f.itertuples()]
-    print(f"fantasy: {len(rows)} player projections for 2027")
-    return {"season": 2027, "players": rows,
-            "cats": ["fg", "ft", "tpm", "reb", "ast", "stl", "blk", "pts"]}
+    # REAL season-to-date lines (data_ingest/fetch_espn_season.py): per player
+    # [date, min, fgm, fga, ftm, fta, tpm, reb, ast, stl, blk, pts]
+    actual, last_date = {}, None
+    bp = CACHE / "espn_box_2027.csv"
+    gp_ = CACHE / "games_2027.csv"
+    if bp.exists() and gp_.exists():
+        bx = pd.read_csv(bp)
+        dates = dict(zip(pd.read_csv(gp_).GAME_ID, pd.read_csv(gp_).DATE))
+        bx = bx[bx["min"] > 0]
+        for r in bx.itertuples():
+            d = dates.get(r.GAME_ID)
+            actual.setdefault(str(int(r.PLAYER_ID)), []).append(
+                [d, int(r.min), int(r.fgm), int(r.fga), int(r.ftm), int(r.fta), int(r.tpm), int(r.reb),
+                 int(r.ast), int(r.stl), int(r.blk), int(r.pts)])
+        last_date = max((v[0] for l in actual.values() for v in l), default=None)
+    # latest injury designation per player (collector on the data-injuries branch)
+    injuries = {}
+    try:
+        from forecast import injury_availability as ia
+        from forecast import player_impacts as pi
+        L = ia.load_log().sort_values("snapshot_utc")
+        L = L.drop_duplicates("athlete_id", keep="last")
+        L = L[L.event.astype(str) != "CLEARED"]
+        by_nm = {pi.norm_name(r["n"]): r["pid"] for r in rows}
+        for r in L.itertuples():
+            pid = by_nm.get(pi.norm_name(r.name))
+            if pid is not None:
+                injuries[str(pid)] = [str(r.designation or r.status), str(r.short_comment or "")[:160],
+                                      str(r.snapshot_utc)[:10]]
+    except Exception as exc:          # log unreachable -> no statuses, page still works
+        print(f"fantasy: injury log unavailable ({exc})")
+    print(f"fantasy: {len(rows)} player projections for 2027; {len(actual)} players with real games "
+          f"(through {last_date}); {len(injuries)} injury statuses")
+    return {"season": 2027, "players": rows, "actual": actual, "lastActual": last_date,
+            "injuries": injuries, "cats": ["fg", "ft", "tpm", "reb", "ast", "stl", "blk", "pts"]}
 
 
 def build_diagnostics(players):
