@@ -837,6 +837,103 @@ def build_draft(players, kpm, last_obs=2026):
                       "form": "a*(pick+k)^-b + c*(61-pick)/60 - a*(61+k)^-b"}, "floor": DRAFT_FLOOR}
 
 
+def build_movers():
+    """Progression / regression candidates + walk-forward validation (forecast/movers.py)."""
+    p, v = CACHE / "movers.csv", CACHE / "movers_validation.json"
+    if not p.exists():
+        return None
+    m = pd.read_csv(p)
+    f = lambda x, d=2: (None if pd.isna(x) else round(float(x), d))
+    rows = [{"pid": int(r.PLAYER_ID), "n": r.player, "t": r.team, "age": f(r.age, 0), "min": int(r.minutes),
+             "cur": f(r.impact_total), "off": f(r.impact_off), "def": f(r.impact_def), "proj": f(r.proj_impact),
+             "raw": f(r.pred_delta), "exp": f(r.exp_delta), "p": f(r.p_improve, 3), "form": f(r.form),
+             "onoff": f(r.onoff_gap), "luck3": f(r.luck3, 3), "n3": (None if pd.isna(r.n3) else int(r.n3)),
+             "season": int(r.season)} for r in m.itertuples()]
+    return {"rows": rows, "validation": json.load(open(v)) if v.exists() else None}
+
+
+def build_props():
+    """Game-level player prop projections for the next week (forecast/props.py)."""
+    p, v = CACHE / "props_live.csv", CACHE / "props_validation.json"
+    if not p.exists() or not v.exists():
+        return None
+    d = pd.read_csv(p)
+    val = json.load(open(v))
+    r1 = lambda x: round(float(x), 2)
+    rows = [[int(r.GAME_ID), r.date, int(r.PLAYER_ID), r["name"], r.team, r.opp, r1(r["min"]), r1(r.pts), r1(r.reb),
+             r1(r.ast), r1(r.tpm), r1(r.stl), r1(r.blk), r1(r.tov), r1(r.pra),
+             (r.status if isinstance(r.status, str) else "")] for _, r in d.iterrows()]
+    return {"cols": ["gid", "date", "pid", "name", "team", "opp", "min", "pts", "reb", "ast", "tpm", "stl", "blk",
+                     "tov", "pra", "status"],
+            "rows": rows, "dist": {s: r["dist"] for s, r in val["stats"].items()},
+            "validation": {"season": val["season"], "n_test": val["n_test"], "params": val.get("params"),
+                           "stats": {s: {k: r[k] for k in ("mae_model", "mae_last_season", "mae_season_to_date",
+                                                           "bias", "cov80", "p_over_mean", "over_rate", "calibration")}
+                                     for s, r in val["stats"].items()}, "early": val.get("early")}}
+
+
+def build_expected():
+    """Actual vs expected (walk-forward preseason projection) per player-season, 2019-2027
+    (forecast/expected.py). Columnar: rows follow `cols`; e_* = expected; src: P = BOOKER-PROJ,
+    C = lost-season carry, A = aged hybrid nowcast."""
+    p, v = CACHE / "expected_vs_actual.csv", CACHE / "expected_validation.json"
+    if not p.exists():
+        return None
+    d = pd.read_csv(p)
+    val = json.load(open(v)) if v.exists() else {}
+    # live season: refresh ACTUALS from today's ESPN box (the daily CI run updates it; the
+    # expected columns are preseason and never change)
+    lp = CACHE / "espn_box_2027.csv"
+    if lp.exists():
+        e = pd.read_csv(lp)
+        e = e[e["min"] > 0]
+        if len(e):
+            g = e.groupby("PLAYER_ID").agg(player=("NAME", "last"), team=("TEAM", "last"), g=("GAME_ID", "nunique"),
+                                           min=("min", "sum"), pts=("pts", "sum"), reb=("reb", "sum"), ast=("ast", "sum"),
+                                           stl=("stl", "sum"), blk=("blk", "sum"), tpm=("tpm", "sum"), tpa=("tpa", "sum"),
+                                           tov=("tov", "sum"), fga=("fga", "sum"), fta=("fta", "sum"))
+            act = pd.DataFrame({"g": g.g, "min": g["min"], "mpg": g["min"] / g.g}, index=g.index)
+            for k in ("pts", "reb", "ast", "stl", "blk", "tpm", "tov"):
+                act[k] = g[k] / g.g
+            act["ts_pct"] = (g.pts / (2 * (g.fga + 0.44 * g.fta))).where(g.fga + g.fta > 0)
+            act["fg3_pct"] = (g.tpm / g.tpa).where(g.tpa > 0)
+            cur = d.season == 2027
+            d.loc[cur, list(act.columns)] = np.nan
+            known = set(d.loc[cur, "PLAYER_ID"].astype(int))
+            for c in act.columns:
+                d.loc[cur, c] = d.loc[cur, "PLAYER_ID"].astype(int).map(act[c]).values
+            new = g[~g.index.isin(known)]
+            if len(new):
+                add = act.loc[new.index].assign(PLAYER_ID=new.index, season=2027, player=new.player, team=new.team)
+                d = pd.concat([d, add.reset_index(drop=True)], ignore_index=True)
+    dec = {"g": 0, "min": 0, "e_g": 0, "e_min": 0, "mpg": 1, "e_mpg": 1, "ts_pct": 3, "fg3_pct": 3,
+           "e_ts_pct": 3, "booker": 2, "waa": 2, "e_booker": 2, "e_waa": 2}
+    num = ["g", "mpg", "min", "pts", "reb", "ast", "stl", "blk", "tpm", "tov", "ts_pct", "fg3_pct", "booker", "waa",
+           "e_g", "e_mpg", "e_min", "e_pts", "e_reb", "e_ast", "e_stl", "e_blk", "e_tpm", "e_tov", "e_ts_pct",
+           "e_booker", "e_waa"]
+
+    def f(x, n):
+        if pd.isna(x):
+            return None
+        x = round(float(x), n)
+        return int(x) if n == 0 else x
+    srcs = {"proj": "P", "carry": "C", "aged": "A"}
+    rows = [[int(r.PLAYER_ID), int(r.season), r.player, (r.team if isinstance(r.team, str) else None)]
+            + [f(getattr(r, c), dec.get(c, 2 if c in ("stl", "blk", "e_stl", "e_blk") else 1)) for c in num]
+            + [srcs.get(r.e_booker_src)] for r in d.itertuples()]
+    keep = ("mae", "rmse", "corr", "bias", "n")
+    vv = {"pooled": val.get("pooled"),
+          "bySeason": {k: {s: {"model": {q: x["model"][q] for q in keep},
+                               "naive": {q: x["naive"][q] for q in keep if q in x["naive"]},
+                               "coverage": x["coverage"]} for s, x in sv.items()}
+                       for k, sv in (val.get("by_season") or {}).items()},
+          "leakCheck": val.get("leak_check"), "minMinutes": val.get("min_actual_minutes"),
+          "schedFactor": val.get("sched_factor"), "kpm": val.get("kpm"), "notes": val.get("notes"),
+          "match": {k: val["match"][k] for k in ("seasons", "rows", "matched", "min_share_matched")}
+          if val.get("match") else None}
+    return {"cols": ["pid", "season", "player", "team"] + num + ["src"], "rows": rows, "validation": vv}
+
+
 def attach_live(players, season):
     """Live season (real ESPN data, data_ingest/fetch_espn_season.py):
       * returns {GAME_ID: [[pid, name, team, starter, min, pts, reb, ast, stl, blk, tpm,
@@ -1468,6 +1565,9 @@ def main():
     recent_games = load_recent_games()
     games, player_games = load_games_and_ratings()
     box = attach_live(players, 2027)          # real 2026-27 box scores + season-so-far blocks
+    movers = build_movers()                   # progression / regression candidates (Explore)
+    props = build_props()                     # game-level player prop projections (Explore)
+    xva = build_expected()                    # actual vs expected (walk-forward preseason) per player-season
     playoff_split = load_playoff_split()
     pred_bracket = load_pred_bracket()
     forecast_seasons = sorted({p["season"] for p in preseason})
@@ -1488,6 +1588,9 @@ def main():
         "games": games,
         "playerGames": player_games,
         "box": box,
+        "movers": movers,
+        "props": props,
+        "xva": xva,
         "playoffSplit": playoff_split,
         "predBracket": pred_bracket,
         "forecastSeasons": forecast_seasons,

@@ -249,7 +249,9 @@
     $$(".tab").forEach((t) => t.classList.toggle("is-active", t.dataset.view === name));
     window.scrollTo({ top: 0 });
   }
+  let backView = "leaderboard";        // where the player card's Back button returns to
   function routeView(v) {
+    backView = v;
     showView(v);
     if (v === "matches") renderMatches();
     if (v === "standings") renderStandings();
@@ -263,6 +265,7 @@
     if (v === "leaders") renderLeaders();
     if (v === "draft") renderDraft();
     if (v === "fantasy" && window.renderFantasy) window.renderFantasy();
+    if (v === "explore" && window.renderExplore) window.renderExplore();
     if (v === "matchups") renderMatchup();
     if (v === "diagnostics") renderDiagnostics();
     if (v === "method") renderMethod();
@@ -456,7 +459,7 @@
   /* ===================================================================== *
    *  PLAYER
    * ===================================================================== */
-  $("#player-back").addEventListener("click", () => showView("leaderboard"));
+  $("#player-back").addEventListener("click", () => showView(backView));
   // Bible-grounded one-line scouting read from the DNA style percentiles.
   const AXIS_STRONG = {
     "Shooting": "elite floor-spacer", "Rim / Interior": "interior anchor",
@@ -563,6 +566,27 @@
       <div class="s"><div class="k">In-season BOOKER</div><div class="v">${L.ratingNow != null ? signed(L.ratingNow, 2) : "\u2014"}${mv != null ? ` <small class="${mv >= 0 ? "pos" : "neg"}">(${signed(mv, 2)} since opener)</small>` : ""}</div></div>
       </div></div>`;
   }
+  // per-season actual vs expected (pre-season, walk-forward) from D.xva
+  function renderPlayerXva(pid) {
+    const X = D.xva, panel = $("#player-xva-panel");
+    if (!X) { panel.hidden = true; return; }
+    const C = Object.fromEntries(X.cols.map((c, i) => [c, i]));
+    const rows = X.rows.filter((r) => r[C.pid] === pid).sort((a, b) => a[C.season] - b[C.season]);
+    if (!rows.length) { panel.hidden = true; return; }
+    panel.hidden = false;
+    const f = (v, d) => (v == null ? "\u2014" : (+v).toFixed(d));
+    const pair = (r, k, d) => {
+      const a = r[C[k]], e = r[C["e_" + k]];
+      const g = a != null && e != null && !(k === "min" && r[C.season] === 2027) ? a - e : null;   // season-to-date minutes vs a full-season projection
+      return `<td>${f(a, d)}</td><td class="muted">${f(e, d)}</td><td class="${g == null ? "" : g >= 0 ? "pos" : "neg"}">${g == null ? "" : signed(g, d)}</td>`;
+    };
+    const grp = ["Minutes", "Points / game", "Rebounds / game", "Assists / game", "WAA"];
+    $("#player-xva thead").innerHTML = `<tr><th class="col-text" rowspan="2">Season</th>${grp.map((g) => `<th colspan="3" style="text-align:center">${g}</th>`).join("")}</tr>` +
+      `<tr>${grp.map(() => "<th>Act</th><th>Exp</th><th>+/-</th>").join("")}</tr>`;
+    $("#player-xva tbody").innerHTML = rows.map((r) => `<tr><td class="col-text">${seasonLabel(r[C.season])}${r[C.season] === 2027 ? " <small class=\"muted\">so far</small>" : ""}</td>` +
+      pair(r, "min", 0) + pair(r, "pts", 1) + pair(r, "reb", 1) + pair(r, "ast", 1) + pair(r, "waa", 1) + "</tr>").join("");
+  }
+  window.openPlayer = (pid) => openPlayer(pid);      // used by explore.js / fantasy.js
   function openPlayer(pid) {
     const seasons = D.players.filter((p) => p.pid === pid).sort((a, b) => a.season - b.season);
     if (!seasons.length) return;
@@ -643,6 +667,8 @@
       tcols.map((c) => `<th class="${c[3] ? "col-text" : ""}">${c[1]}</th>`).join("") + "</tr>";
     $("#player-table tbody").innerHTML = seasons.map((r) =>
       "<tr>" + tcols.map((c) => `<td class="${c[3] ? "col-text" : ""}">${c[2](r)}</td>`).join("") + "</tr>").join("");
+
+    renderPlayerXva(pid);
 
     destroy("player");
     const ctx = $("#player-chart");
@@ -2661,6 +2687,7 @@
     ["leaders", "True-Skill Leaders", "Difficulty-adjusted skill leaderboards, incl. projections"],
     ["draft", "Draft", "Draft classes and team / GM drafting skill"],
     ["fantasy", "Fantasy", "H2H category league: auction or snake draft, matchups, moves"],
+    ["explore", "Explore", "Custom charts, progression / regression candidates, player props"],
     ["matchups", "Matchups", "Team vs team skill comparison"],
     ["gameodds", "Game Odds", "Model vs market: log-loss, calibration, ROI"],
     ["diagnostics", "Diagnostics", "Calibration and model health"],

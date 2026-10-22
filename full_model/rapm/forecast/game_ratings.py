@@ -43,12 +43,20 @@ def build(seasons=tuple(range(2018, 2028))):
         imp = dict(zip(bk[bk.season == s].PLAYER_ID, bk[bk.season == s].impact_total))
         # LIVE season (no season rating yet): anchor each player-game to the in-season filter's
         # PRE-GAME rating (o+d, forecast.sequential) instead of a season rating; no season-mean
-        # anchoring. Unrated players fall back to the replacement-ish 0 baseline as before.
+        # anchoring. Unrated players (not in the filter state that game) fall back to the
+        # projected-roster REPLACEMENT level (minutes_share repl, ~-0.8), not 0.0 -- 0 is
+        # league-average, which credited an unknown call-up as a starter-level player.
         live = not imp and (CACHE / f"seq_players_{s}.parquet").exists()
         gimp = {}
+        repl_live = 0.0
         if live:
             sp_ = pd.read_parquet(CACHE / f"seq_players_{s}.parquet")
             gimp = {(int(g), int(p)): float(o + d_) for g, p, o, d_ in zip(sp_.GAME_ID, sp_.PLAYER_ID, sp_.o, sp_.d)}
+            try:
+                from . import minutes_share as ms
+                repl_live = float(ms.load(s).repl.iloc[0])
+            except Exception:
+                repl_live = pi.PRIOR_BASE
         rows = {}
         for r in st.itertuples():
             try:
@@ -59,7 +67,7 @@ def build(seasons=tuple(range(2018, 2028))):
             if len(hl) != 5 or len(al) != 5 or not (r.POSS == r.POSS) or r.POSS <= 0:
                 continue
             gid_ = int(r.GAME_ID)
-            ri = (lambda q: gimp.get((gid_, q), 0.0)) if live else (lambda q: imp.get(q, 0.0))
+            ri = (lambda q: gimp.get((gid_, q), repl_live)) if live else (lambda q: imp.get(q, 0.0))
             ey = pi.HOME_COURT_ADV + sum(ri(p) for p in hl) - sum(ri(p) for p in al)
             resid = float(r.Y) - ey
             for p in hl:
@@ -81,7 +89,7 @@ def build(seasons=tuple(range(2018, 2028))):
         # as the trajectory form dots. k = poss/(poss+P0), P0=150 -> a 70-poss
         # starter game keeps ~32% of its raw deviation.
         P0 = 150.0
-        base = (pd.Series([gimp.get((int(g), int(p)), 0.0) for g, p in zip(d.GAME_ID, d.PLAYER_ID)], index=d.index)
+        base = (pd.Series([gimp.get((int(g), int(p)), repl_live) for g, p in zip(d.GAME_ID, d.PLAYER_ID)], index=d.index)
                 if live else d.PLAYER_ID.map(imp).fillna(0.0))
         k = d.poss / (d.poss + P0)
         d["g"] = base + k * (d.g - base)

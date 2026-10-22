@@ -14,3 +14,4 @@ cache/bias_audit_panel.csv
 cache/*.bak*
 cache/players_2027_espn_raw.csv.tmp
 cache/espn_games_*
+cache/_pre_2026-10-22_backup

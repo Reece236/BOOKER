@@ -54,6 +54,15 @@ H_MEAN, H_SD = 2.5, 1.0
 K0 = 4.0           # projection weight in games for the share blend (tuned 2019-21: 4 > 8 > 16)
 HL_GAMES = 10.0    # recency half-life of observed presence
 AVAIL = 0.85       # typical availability: projected (unconditional) share / AVAIL = share when playing
+# PRIOR SEED (2026-10-22 re-tune, see HANDOFF 0.8): prior mean = aged row s-1 +
+# PROJ_LAMBDA * (BOOKER-PROJ for s - aged total), the delta split O/D in proportion to the
+# prior variances. PRIOR_SD_MULT scales the row's sd (overlay) before ETA is added;
+# _SD_OVERRIDE {(season, pid): (sd_o, sd_d)} lets a harness swap the sd source.
+PROJ_LAMBDA = 0.5     # gate 2026-10-22 (HANDOFF 0.8): mid rho vs pure +.013 SEL(2020-23) / +.019 TEST(2024-26)
+PRIOR_SD_MULT = 1.0
+PROJ_MATCH_SPREAD = False   # rescale PROJ's (shrunk) spread to the aged ratings' before blending
+_SD_OVERRIDE = {}
+_PROJ_CACHE = {}
 # Minutes redistribution when players sit (availability_research.py, fit on realized
 # per-game presence 2019-21, tested 2022-26): absent minutes go to available teammates
 # with weight c^ALPHA (c = share when playing). ALPHA < 1 -> the deeper bench absorbs
@@ -102,6 +111,19 @@ def redistribute(cond, avail):
     pres = a * c + (M * w / w.sum() if w.sum() > 0 else 0.0)
     tot = pres.sum()
     return dict(zip(pids, pres * (5.0 / tot))) if tot > 0 else {}
+
+
+def _proj_for(s):
+    """{pid: BOOKER-PROJ total for season s} (walk-forward: built from data through s-1)."""
+    if s not in _PROJ_CACHE:
+        p = CACHE / "booker_proj.csv"
+        if p.exists():
+            d = pd.read_csv(p)
+            d = d[d.proj_for_season == s]
+            _PROJ_CACHE[s] = dict(zip(d.PLAYER_ID.astype(int), d.proj_impact.astype(float)))
+        else:
+            _PROJ_CACHE[s] = {}
+    return _PROJ_CACHE[s]
 
 
 def _league(d):
@@ -163,6 +185,15 @@ def run_season(data, s, rat, proj, repl, verbose=True, avail_model=None, injury_
     D = 2 * P + 2 + NB
     m = np.zeros(D)
     v = np.zeros(D)
+    pj = _proj_for(s) if PROJ_LAMBDA else {}
+    if pj and PROJ_MATCH_SPREAD:
+        both = [p for p in pj if p in r1.index]
+        if len(both) > 50:
+            a_ = np.array([float(r1.at[p, "impact_off"] + r1.at[p, "impact_def"]) for p in both])
+            b_ = np.array([pj[p] for p in both])
+            k_ = a_.std() / max(b_.std(), 1e-6)
+            mb = b_.mean()
+            pj = {p: mb + k_ * (v - mb) for p, v in pj.items()}
     for p, i in ix.items():
         if p in r1.index:
             o, dd = float(r1.at[p, "impact_off"]), float(r1.at[p, "impact_def"])
@@ -170,9 +201,14 @@ def run_season(data, s, rat, proj, repl, verbose=True, avail_model=None, injury_
             if ag == ag and ag is not None:            # one year of aging, split O/D
                 da = pi.AGE_QUAD * ((ag + 1 - pi.AGE_PEAK) ** 2 - (ag - pi.AGE_PEAK) ** 2)
                 o += da / 2; dd += da / 2
+            so_, sd_ = _SD_OVERRIDE.get((s - 1, p), (float(r1.at[p, "sd_off"]), float(r1.at[p, "sd_def"])))
+            v[i] = (PRIOR_SD_MULT * so_) ** 2 + ETA ** 2
+            v[P + i] = (PRIOR_SD_MULT * sd_) ** 2 + ETA ** 2
+            if p in pj:                                # shrink toward BOOKER-PROJ (fallback: aged)
+                delta = PROJ_LAMBDA * (pj[p] - (o + dd))
+                wo = v[i] / (v[i] + v[P + i])
+                o += delta * wo; dd += delta * (1.0 - wo)
             m[i], m[P + i] = o, dd
-            v[i] = float(r1.at[p, "sd_off"]) ** 2 + ETA ** 2
-            v[P + i] = float(r1.at[p, "sd_def"]) ** 2 + ETA ** 2
         else:
             m[i] = m[P + i] = repl / 2.0
             v[i] = v[P + i] = NEW_SD ** 2

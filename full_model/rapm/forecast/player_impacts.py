@@ -133,6 +133,7 @@ class BookerData:
 
     def __init__(self, seasons=range(2015, 2028)):
         self.STINTS, self.PLAYERS, self.TEAMS, self.GAMES = {}, {}, {}, {}
+        self.STINTS_PO = {}
         self.seasons = []
         for s in seasons:
             sp = CACHE / f"stints_{s}.csv"
@@ -142,6 +143,15 @@ class BookerData:
                 d = pd.read_csv(sp)
                 d["home"] = d.HOME_LINEUP.map(parse_lineup)
                 d["away"] = d.AWAY_LINEUP.map(parse_lineup)
+                # REGULAR SEASON ONLY (GAME_ID 2xxxxxxx). stints_2026.csv carries its
+                # playoffs (live feed) while 2018-25 playoffs live in stints_po_{s}.csv;
+                # every model consumer (BookerFormer, sequential L/C, minutes, context,
+                # props pace) is a regular-season model. Playoff rows -> STINTS_PO.
+                # (game_ratings reads the files directly and keeps playoffs.)
+                reg = d.GAME_ID.astype(str).str.startswith("2")
+                if not reg.all():
+                    self.STINTS_PO[s] = d[~reg].reset_index(drop=True)
+                    d = d[reg].reset_index(drop=True)
                 self.STINTS[s] = d
             elif not pp.exists():
                 continue

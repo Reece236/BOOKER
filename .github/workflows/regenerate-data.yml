@@ -129,6 +129,8 @@ jobs:
           python -m forecast.game_ratings
           python -m forecast.inseason
           python -m forecast.fantasy_proj
+          # next-7-day prop projections (Explore page); non-fatal so one bad day keeps the refresh
+          python -m forecast.props || echo "::warning::forecast.props failed; keeping the cached props"
 
       - name: Re-project minutes shares
         if: ${{ inputs.run_preseason }}

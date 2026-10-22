@@ -459,3 +459,13 @@ table.grid tbody tr.clickable{cursor:pointer}
 tr.me td{background:rgba(31,92,67,.08)}
 .fx-nom{background:var(--panel-2); padding:8px}
 .fx-names label{display:inline-flex; align-items:center; gap:4px}
+
+/* Explore (search + chart builder) */
+#view-explore select,#view-explore input[type=text]{width:auto; max-width:100%}
+#view-explore input[type=search]{width:auto}
+#view-explore .ex-ax{display:flex; flex-direction:column; gap:5px}
+#view-explore .ex-pair{display:flex; gap:4px}
+#view-explore .presets{flex-wrap:wrap; gap:6px 14px}
+#view-explore .presets .link-btn{white-space:nowrap}
+#view-explore code{background:var(--panel-2); padding:0 3px; font-size:11.5px}
+#view-explore .muted{color:var(--muted)}

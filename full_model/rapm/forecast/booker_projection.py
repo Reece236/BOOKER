@@ -154,7 +154,9 @@ def build():
     for s in X.season.unique():
         p = CACHE / f"stints_{int(s)}.csv"
         if p.exists():
-            hours[int(s)] = pd.read_csv(p, usecols=["DURATION_SECONDS"]).DURATION_SECONDS.sum() / 3600.0
+            hh = pd.read_csv(p, usecols=["GAME_ID", "DURATION_SECONDS"])
+            hh = hh[hh.GAME_ID.astype(str).str.startswith("2")]      # regular season only
+            hours[int(s)] = hh.DURATION_SECONDS.sum() / 3600.0
     for s, h in hours.items():
         prior = [hours[t] for t in hours if t < s]
         if prior and h < 0.85 * max(prior):

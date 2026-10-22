@@ -122,11 +122,15 @@ REFIT_FULL = os.environ.get("BF_REFIT_FULL", "1") != "0"
 # Offensive prior nudge from the shot-quality skill composite, in points/100 per SD.
 # Moderate (1.0): skilled creators start ~1 pt/100 higher per SD of skill, then the
 # RAPM stint likelihood pulls back toward results. Set BF_SKILL_NUDGE=0 to disable.
-SKILL_NUDGE = float(os.environ.get("BF_SKILL_NUDGE", 1.0))
+# 2026-10-22 re-gate (bf_gate.py, rebuilt shot_defense; HANDOFF 0.8): both nudges HURT OOS,
+# monotonically. DN/SK 1/1 (old) rho .422 wins 8.82 -> 0/0.5 rho .431 wins 8.27 -> 0/0 rho
+# .437 wins 8.11. Shipped 0/0.5 (in-grid, preseason RMSE unchanged 8.912->8.915); 0/0 had
+# better player metrics but preseason +.02 (8.933) -> not promoted. TAU_OFF_MIN: no effect.
+SKILL_NUDGE = float(os.environ.get("BF_SKILL_NUDGE", 0.5))
 # Defensive prior nudge from the shot-based defensive value (deterrence + make-
 # limiting), points/100 per SD. Lifts rim deterrents (Wemby) and reins in vets whose
 # RAPM defense isn't shot-backed (CP3). BF_DEF_NUDGE=0 disables.
-DEF_NUDGE = float(os.environ.get("BF_DEF_NUDGE", 1.0))
+DEF_NUDGE = float(os.environ.get("BF_DEF_NUDGE", 0.0))     # was 1.0; OFF per 2026-10-22 re-gate
 # Low-usage offensive prior tightening (de-collinearization): a player at USAGE_REF+
 # usage keeps the full TAU_RATING offensive prior; lower usage shrinks tau_off toward
 # TAU_RATING*TAU_OFF_MIN so RAPM can't inflate a connective vet's offense.

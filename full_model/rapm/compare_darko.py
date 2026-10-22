@@ -158,7 +158,7 @@ def test_preseason(D):
         proj = ms.load(s)
         first = D[D.season == s].sort_values("date").groupby("nba_id").first()   # opener, pre-game
         dk = first.dpm_pre.to_dict()
-        r1 = rat[rat.season == s - 1]
+        r1 = pi.ratings_through(s - 1, rat)      # same prior rows production uses (carries + short-season fallback)
         bk = dict(zip(r1.PLAYER_ID, r1.impact_total))
         pre = pd.read_csv(CACHE / f"preseason_{s}.csv").set_index("team")
         n_bk = ms.team_nets(bk, s, proj=proj)
@@ -227,7 +227,7 @@ def test_players(D):
         for lab, cut in (("opener", dates[0]), ("midseason", dates[len(dates) // 2])):
             seq = P[P.date >= cut].sort_values("date").groupby("PLAYER_ID").bk_seq.first()   # pre-game state at cutoff
             dk = D[(D.season == s) & (D.date >= cut)].sort_values("date").groupby("nba_id").dpm_pre.first()
-            r1 = rat[rat.season == s - 1].set_index("PLAYER_ID").impact_total
+            r1 = pi.ratings_through(s - 1, rat).set_index("PLAYER_ID").impact_total
             out = rest_of_season(data, s, cut)
             out = out[out["min"] >= 500].copy()
             out["BOOKER_seq"] = out.PLAYER_ID.map(seq)

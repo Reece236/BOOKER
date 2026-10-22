@@ -22,6 +22,7 @@
   <button class="tab" data-view="teams">Teams</button>
   <button class="tab" data-view="draft">Draft</button>
   <button class="tab" data-view="fantasy">Fantasy</button>
+  <button class="tab" data-view="explore">Explore</button>
   <button class="tab" data-view="more">More</button>
 </nav>
 
@@ -98,7 +99,7 @@
 
   <!-- PLAYER ----------------------------------------------------------- -->
   <section id="view-player" class="view" hidden>
-    <button class="back" id="player-back">&larr; Players</button>
+    <button class="back" id="player-back">&larr; Back</button>
     <div class="player-head" id="player-head"></div>
     <div class="panel" id="player-matches-panel" hidden>
       <h3 class="panel-title">Match ratings <span class="panel-hint">per-game impact on the FotMob 0–10 scale — what his lineups did beyond what the other nine predict</span></h3>
@@ -141,6 +142,12 @@
       <h3 class="panel-title">Season log</h3>
       <div class="table-scroll">
         <table class="grid" id="player-table"><thead></thead><tbody></tbody></table>
+      </div>
+    </div>
+    <div class="panel" id="player-xva-panel" hidden>
+      <h3 class="panel-title">Actual vs expected <span class="panel-hint">expected = pre-season projection from earlier seasons only</span></h3>
+      <div class="table-scroll">
+        <table class="grid" id="player-xva"><thead></thead><tbody></tbody></table>
       </div>
     </div>
   </section>
@@ -344,6 +351,12 @@
     <div class="table-scroll"><table class="grid" id="dr-rank"><thead></thead><tbody></tbody></table></div>
   </section>
 
+  <!-- EXPLORE ---------------------------------------------------------- -->
+  <section id="view-explore" class="view" hidden>
+    <h2 class="page-head">Explore</h2>
+    <div id="ex-root"></div>
+  </section>
+
   <!-- FANTASY ---------------------------------------------------------- -->
   <section id="view-fantasy" class="view" hidden>
     <h2 class="page-head">Fantasy: H2H categories</h2>
@@ -410,6 +423,7 @@
 <script src="data/data.js"></script>
 <script src="assets/app.js"></script>
 <script src="assets/fantasy.js"></script>
+<script src="assets/explore.js"></script>
 </body>
 </html>
 
