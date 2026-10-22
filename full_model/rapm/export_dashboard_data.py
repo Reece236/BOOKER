@@ -1122,6 +1122,11 @@ def main():
     ratings = ratings.rename(columns={"PLAYER_ID": "pid"})
     data = pi.BookerData(seasons=range(2015, 2028))
     model_map = lb.load_model_waa_map(data)
+    # BookerFormer per-100 for every rated player-season: the hybrid-gap anchor fallback
+    # for players with no enhanced-ridge row (model_map then has no waaBayesian100).
+    _bfa = pd.read_csv(HERE / "booker_bookerformer_ratings.csv", usecols=["PLAYER_ID", "season", "impact_total"])
+    bf_anchor = {(int(r.PLAYER_ID), int(r.season)): float(r.impact_total)
+                 for r in _bfa.itertuples() if pd.notna(r.impact_total)}
     proj_2027 = lb.build_2027_projections(data)
     # sticky, age-curved, team-independent grades + 3-yr projections (cache/player_grades.csv)
     grades_map = {}
@@ -1495,6 +1500,8 @@ def main():
                 if pjv is not None:
                     m26 = model_map.get((pid, gs)) or {}
                     anchor = m26.get("waaBayesian100")
+                    if anchor is None:
+                        anchor = bf_anchor.get((pid, gs))
                     delta = ((g26["hybBooker"] - anchor)
                              if anchor is not None else 0.0)
                     pb = round(pjv + delta, 2)

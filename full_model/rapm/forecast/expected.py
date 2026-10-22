@@ -263,8 +263,6 @@ def _expected_booker(site, grades, lob):
     pj = {(int(p), int(s)): float(v) for p, s, v in zip(proj.PLAYER_ID, proj.proj_for_season, proj.proj_impact)}
     carry = pd.read_csv(CACHE / "rating_carry.csv")
     cy = {(int(p), int(s)): float(v) for p, s, v in zip(carry.PLAYER_ID, carry.season, carry.impact_total)}
-    e = pd.read_csv(RAPM / "booker_waa_enhanced_ratings.csv")
-    enh = set(zip(e.pid.astype(int), e.season.astype(int)))
     graded = {}
     for (pid, s), g in grades.items():
         if pd.notna(g.hybBooker):
@@ -285,11 +283,6 @@ def _expected_booker(site, grades, lob):
                 src = "carry"
             if val is not None:
                 anchor = site.get((pid, gs), {}).get("m100", np.nan) if gs is not None else np.nan
-                if (pid, gs) not in enh:
-                    # exporter quirk, mirrored so 2027 equals the site: leaderboard_data's
-                    # model_map row for a player with no enhanced-ridge row carries no
-                    # waaBayesian100 -> anchor None -> NO hybrid gap (raw PROJ shown)
-                    anchor = np.nan
                 if g is not None and pd.notna(anchor):
                     val = val + (g.hybBooker - anchor)    # lob correction cancels in the gap
                 rows.append((pid, s, val, src))
