@@ -49,6 +49,24 @@ def _L(f, cols):
     return d[["PLAYER_ID", "season"] + [c for c in cols if c in d.columns]]
 
 
+_PARTIAL = {}
+
+
+def _season_partial(s):
+    """True if season s is live/partial: unplayed regular-season games in games_{s}.csv
+    (same rule as BookerData.PARTIAL), or no schedule file at all."""
+    if s not in _PARTIAL:
+        p = CACHE / f"games_{s}.csv"
+        if not p.exists():
+            _PARTIAL[s] = True
+        else:
+            g = pd.read_csv(p)
+            if "SEASON_TYPE" in g.columns:
+                g = g[g.SEASON_TYPE == "Regular Season"]
+            _PARTIAL[s] = bool(g.HOME_WIN.isna().any()) if "HOME_WIN" in g.columns else True
+    return _PARTIAL[s]
+
+
 def _panel():
     bk = pd.read_csv(RAPM / "booker_bookerformer_ratings.csv")
     X = bk[["PLAYER_ID", "season", "player", "minutes",
@@ -89,7 +107,11 @@ def _panel():
     # only OBSERVED seasons may be training targets: the ratings CSV also carries
     # future-season rows that are themselves projections (no stints exist) --
     # training on them would be circular.
-    obs = {int(s) for s in nxt.season.unique() if (CACHE / f"stints_{int(s)}.csv").exists()}
+    # A season in progress (stints exist but regular-season games remain unplayed) is NOT
+    # an observed outcome either -- a partial live season must never become a target
+    # (2026-10-22b guard).
+    obs = {int(s) for s in nxt.season.unique()
+           if (CACHE / f"stints_{int(s)}.csv").exists() and not _season_partial(int(s))}
     nxt = nxt[nxt.season.isin(obs)]
     nxt["season"] -= 1
     return X.merge(nxt, on=["PLAYER_ID", "season"], how="left")
@@ -144,6 +166,10 @@ def build():
                     on=["PLAYER_ID", "season"], how="left")
     else:
         X["y_pure"] = np.nan
+    # same guard for the arbiter targets: next season in progress -> no target
+    live_next = X.season.map(lambda s_: _season_partial(int(s_) + 1)
+                             if (CACHE / f"stints_{int(s_) + 1}.csv").exists() else False)
+    X.loc[live_next, ["y_real", "y_pure"]] = np.nan
     # Partial-feed guard: when a season's stint capture is incomplete (2026: ~72%
     # of expected stint-hours -- the feed died mid-season), its stint-derived
     # recency/on-court features are computed on a biased subset and read as

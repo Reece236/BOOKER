@@ -162,7 +162,8 @@ def test_preseason(D):
         bk = dict(zip(r1.PLAYER_ID, r1.impact_total))
         pre = pd.read_csv(CACHE / f"preseason_{s}.csv").set_index("team")
         n_bk = ms.team_nets(bk, s, proj=proj)
-        n_dk = ms.team_nets({int(k): v for k, v in dk.items()}, s, proj=proj, repl=DARKO_FILL / 2)
+        n_dk = ms.team_nets({int(k): v for k, v in dk.items()}, s, proj=proj, repl=DARKO_FILL / 2,
+                              unrated=pi.PRIOR_BASE)   # DARKO arm unchanged by the BOOKER unrated default
         for t in n_bk:
             aw = data.ACTUAL_WINS.get((t, s))
             gp = 72 if s in (2020, 2021) else 82

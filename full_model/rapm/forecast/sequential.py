@@ -81,6 +81,11 @@ BOX_ON = False
 BOX_TAU = 3.0
 BOX_KAPPA = 1.0
 BOX_MIN_POSS = 5.0
+# Leverage-scaled stint precision (2026-10-22b gate, HANDOFF 0.9): R = C / (POSS * c),
+# c = forecast.leverage.stint_weight (clip(1 + LEV_KAPPA*(LI-1), .5, 1.3), poss-mean 1). 0 = off.
+LEV_KAPPA = 0.0
+UNRATED_PRIOR = "repl"  # "repl" (old: repl/2 per side) | "wf" (minutes_share.unrated_default)
+AGE_CARRY_FIX = True   # age short-season fallback rows from carried_from (False = old 1-year aging)
 ROT_MIN = 0.12     # actives mode: min share-when-playing (~6 min/g) to count as an active
 
 
@@ -198,8 +203,12 @@ def run_season(data, s, rat, proj, repl, verbose=True, avail_model=None, injury_
         if p in r1.index:
             o, dd = float(r1.at[p, "impact_off"]), float(r1.at[p, "impact_def"])
             ag = ages.get(p)
-            if ag == ag and ag is not None:            # one year of aging, split O/D
-                da = pi.AGE_QUAD * ((ag + 1 - pi.AGE_PEAK) ** 2 - (ag - pi.AGE_PEAK) ** 2)
+            if ag == ag and ag is not None:            # aging to season s, split O/D
+                # short-season fallback rows (ratings_through) were carried from s-2/s-3:
+                # age them from the season they were fit through, not from s-1 (2026-10-22b)
+                cf = r1.at[p, "carried_from"] if "carried_from" in r1.columns else np.nan
+                yrs = (s - int(cf)) if (cf == cf and AGE_CARRY_FIX) else 1
+                da = pi.AGE_QUAD * ((ag + 1 - pi.AGE_PEAK) ** 2 - (ag + 1 - yrs - pi.AGE_PEAK) ** 2)
                 o += da / 2; dd += da / 2
             so_, sd_ = _SD_OVERRIDE.get((s - 1, p), (float(r1.at[p, "sd_off"]), float(r1.at[p, "sd_def"])))
             v[i] = (PRIOR_SD_MULT * so_) ** 2 + ETA ** 2
@@ -210,7 +219,9 @@ def run_season(data, s, rat, proj, repl, verbose=True, avail_model=None, injury_
                 o += delta * wo; dd += delta * (1.0 - wo)
             m[i], m[P + i] = o, dd
         else:
-            m[i] = m[P + i] = repl / 2.0
+            # unrated prior: repl/2 per side (old); UNRATED_PRIOR="wf" -> the walk-forward
+            # unrated default (minutes_share.unrated_default) split evenly
+            m[i] = m[P + i] = (ms.unrated_default(s, rat) if UNRATED_PRIOR == "wf" else repl) / 2.0
             v[i] = v[P + i] = NEW_SD ** 2
     m[2 * P], v[2 * P] = 0.0, MU_SD ** 2
     m[2 * P + 1], v[2 * P + 1] = H_MEAN, H_SD ** 2
@@ -251,6 +262,12 @@ def run_season(data, s, rat, proj, repl, verbose=True, avail_model=None, injury_
     for t, d_ in proj_sh.items():
         for p in d_:
             member[p] = t
+    if st is not None:
+        if LEV_KAPPA:
+            from . import leverage as lev
+            st = st.assign(LEVC=lev.stint_weight(s, LEV_KAPPA, st.POSS.to_numpy(), st.GAME_ID.to_numpy()))
+        else:
+            st = st.assign(LEVC=1.0)
     stints_by_date = ({dt: g for dt, g in st.assign(DATE=st.GAME_ID.astype("int64").map(
         dict(zip(reg_games.GAME_ID.astype("int64"), reg_games.DATE)))).groupby("DATE")}
         if st is not None else {})
@@ -378,8 +395,8 @@ def run_season(data, s, rat, proj, repl, verbose=True, avail_model=None, injury_
                     H[rr, iq] += c_; H[rr, P + iq] += c_; H[rr, 2 * P + 2 + iq] += c_
                 y[rr] = yc
                 R[rr] = box_kappa * bsig2 / ps_
-            for k_, (hl, al, poss, yo, yd) in enumerate(zip(g.home, g.away, g.POSS,
-                                                            g.Y_OFF_HOME, g.Y_DEF_HOME)):
+            for k_, (hl, al, poss, yo, yd, lc_) in enumerate(zip(g.home, g.away, g.POSS,
+                                                                 g.Y_OFF_HOME, g.Y_DEF_HOME, g.LEVC)):
                 for rr, off, de, yy, home in ((2 * k_, hl, al, yo, 1), (2 * k_ + 1, al, hl, yd, 0)):
                     for p in off:
                         H[rr, ix[p]] += 1.0
@@ -388,7 +405,7 @@ def run_season(data, s, rat, proj, repl, verbose=True, avail_model=None, injury_
                     H[rr, 2 * P] = 1.0
                     H[rr, 2 * P + 1] = home
                     y[rr] = yy - L
-                    R[rr] = C / max(poss, 0.05)
+                    R[rr] = C / (max(poss, 0.05) * lc_)
             cols = np.where(np.abs(H).sum(0) > 0)[0]     # only touched states
             Hc = H[:, cols]
             SHt = S[:, cols] @ Hc.T                       # D x n

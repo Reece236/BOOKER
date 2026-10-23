@@ -29,7 +29,9 @@ def main():
     pure = pd.read_csv("cache/pure_rapm.csv")[["PLAYER_ID", "season", "pure_rapm"]]
     rho, zsd, mov = [], [], []
     for s in range(2018, 2026):
-        post, _ = bf.fit_bookerformer([s - 2, s - 1, s], s + 1, data, mc_samples=30)
+        W = bf.TRAIN_WINDOW
+        post, _ = bf.fit_bookerformer([x for x in range(s - W + 1, s + 1) if x in data.STINTS],
+                                      s + 1, data, mc_samples=30)
         nxt = pure[pure.season == s + 1].merge(data.PLAYERS[s + 1][["PLAYER_ID", "MINUTES"]], on="PLAYER_ID")
         nxt = nxt[nxt.MINUTES >= 500].merge(post, on="PLAYER_ID")
         rho.append(spearmanr(nxt.impact_total, nxt.pure_rapm)[0])
@@ -38,18 +40,18 @@ def main():
         mov.append(float(post.impact_total.std()))
     nr, wr, r2, cov = [], [], [], []
     for s in range(2020, 2026):
-        train = [s - 3, s - 2, s - 1]
+        train = [x for x in range(s - bf.TRAIN_WINDOW, s) if x in data.STINTS]
         post, model = bf.fit_bookerformer(train, s, data, mc_samples=30)
-        a, b, _, c = bb.team_scores(data, dict(zip(post.PLAYER_ID, post.impact_total)), s, train)
+        a, b, _, c = bb.team_scores(data, dict(zip(post.PLAYER_ID, post.impact_total)), s, train[-3:])
         nr.append(a); wr.append(b); r2.append(c)
         d = data.STINTS[s]
         mu, sd, keep = bf.predict_offense_points(model, model._fd, list(d.home), list(d.away), mc_samples=30,
                                                  poss=d.POSS.to_numpy())
         act, w = d.Y_OFF_HOME.to_numpy()[keep], d.POSS.to_numpy()[keep]
         cov.append(float(np.average((np.abs(act - mu) <= 1.645 * sd).astype(float), weights=w)))
-    print(f"BF_LIK={bf.BF_LIK} TAU={bf.TAU_RATING}: player rho(next pure) {np.mean(rho):.4f} "
+    print(f"BF_LIK={bf.BF_LIK} TAU={bf.TAU_RATING} W={bf.TRAIN_WINDOW} KAPPA={bf.LEV_KAPPA}: player rho(next pure) {np.mean(rho):.4f} "
           f"[{', '.join(f'{x:.3f}' for x in rho)}] | z-sd {np.mean(zsd):.2f} | rating sd {np.mean(mov):.2f} || "
-          f"team net RMSE {np.mean(nr):.3f} wins RMSE {np.mean(wr):.2f} R2 {np.mean(r2):.3f} | stint cov90 {np.mean(cov):.3f}",
+          f"team net RMSE {np.mean(nr):.3f} wins RMSE {np.mean(wr):.3f} [{', '.join(f'{x:.2f}' for x in wr)}] R2 {np.mean(r2):.3f} | stint cov90 {np.mean(cov):.3f}",
           flush=True)
 
 

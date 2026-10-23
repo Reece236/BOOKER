@@ -21,7 +21,7 @@ from pathlib import Path
 import pandas as pd
 
 from forecast import player_impacts as pi
-from forecast.bookerformer import fit_bookerformer
+from forecast.bookerformer import fit_bookerformer, TRAIN_WINDOW
 from stint_off_def import enrich_season
 
 HERE = Path(__file__).resolve().parent
@@ -61,8 +61,9 @@ def main(seasons):
 
     all_rows, carry = [], []
     for target in seasons:
-        # rating THROUGH `target`: train on target-2..target, decay anchored at target+1
-        train = [s for s in range(target - 2, target + 1) if s in data.STINTS]
+        # rating THROUGH `target`: train on target-W+1..target (W = bf.TRAIN_WINDOW, 3),
+        # decay anchored at target+1
+        train = [s for s in range(target - TRAIN_WINDOW + 1, target + 1) if s in data.STINTS]
         if len(train) < 2 or target not in data.STINTS:
             print(f"skip {target}: needs observed stints for {target} and >=2 training seasons")
             continue

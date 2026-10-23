@@ -367,12 +367,40 @@ def load(season=None):
     return df if season is None else df[df.season == season]
 
 
-def team_nets(impact, season, proj=None, age_shift=None, repl=None):
+# UNRATED DEFAULT (2026-10-22b, HANDOFF 0.9): rating for a projected-roster player with no
+# prior rating row (rookies, players returning from <250-min seasons). "fixed" = PRIOR_BASE
+# (-1.0, the old value); "wf" = walk-forward minutes-weighted mean of the BookerFormer
+# rating THROUGH t of players unrated entering t, pooled over seasons < s.
+UNRATED_MODE = "wf"            # gate 2026-10-22b: preseason RMSE 8.919 -> 8.894, compare_darko B 9.542 -> 9.505
+UNRATED_SHRINK = 1.0        # gate knob: default = PRIOR_BASE + SHRINK * (wf mean - PRIOR_BASE)
+_UNR = {}
+
+
+def unrated_default(season, rat=None):
+    if UNRATED_MODE == "fixed":
+        return pi.PRIOR_BASE
+    key = (season, UNRATED_MODE, UNRATED_SHRINK)
+    if key not in _UNR:
+        r = pd.read_csv(RAPM / "booker_bookerformer_ratings.csv") if rat is None else rat
+        num = den = 0.0
+        for t in sorted(int(x) for x in r.season.unique()):
+            if t >= season or (t - 1) not in set(r.season):
+                continue
+            prev = set(pi.ratings_through(t - 1, r).PLAYER_ID)
+            cur = r[(r.season == t) & ~r.PLAYER_ID.isin(prev)]
+            num += float((cur.impact_total * cur.minutes).sum()); den += float(cur.minutes.sum())
+        wf = num / den if den > 0 else pi.PRIOR_BASE
+        _UNR[key] = pi.PRIOR_BASE + UNRATED_SHRINK * (wf - pi.PRIOR_BASE)
+    return _UNR[key]
+
+
+def team_nets(impact, season, proj=None, age_shift=None, repl=None, unrated=None):
     """{team: sum(proj_pres * impact) + (5 - sum proj_pres) * replacement} over the
     projected roster. `impact` maps pid -> rating (prior-only!); unknown players get
-    PRIOR_BASE. `age_shift` optional pid -> additive aging delta."""
+    `unrated` (default unrated_default(season)). `age_shift` optional pid -> additive aging delta."""
     proj = load(season) if proj is None else proj
-    v = proj.PLAYER_ID.map(lambda p: impact.get(int(p), pi.PRIOR_BASE))
+    ud = unrated_default(season) if unrated is None else unrated
+    v = proj.PLAYER_ID.map(lambda p: impact.get(int(p), ud))
     if age_shift:
         v = v + proj.PLAYER_ID.map(lambda p: age_shift.get(int(p), 0.0))
     rp = float(proj.repl.iloc[0]) if repl is None and "repl" in proj and len(proj) else \

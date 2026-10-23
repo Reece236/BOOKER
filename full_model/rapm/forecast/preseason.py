@@ -62,11 +62,15 @@ def _booker_aged_nets(data, season):
         return None
     g = pi.ratings_through(season - 1, r)
     imp = {}
-    for pid, v in zip(g.PLAYER_ID, g.impact_total):
+    cfs = (g.carried_from if "carried_from" in g.columns else pd.Series(np.nan, index=g.index))
+    for pid, v, cf in zip(g.PLAYER_ID, g.impact_total, cfs):
         ar = _BK_CACHE["age_ref"].get(int(pid))
         if ar is not None:
             a1 = ar[1] + (season - ar[0])
-            v = v + pi.AGE_QUAD * ((a1 - pi.AGE_PEAK) ** 2 - (a1 - 1 - pi.AGE_PEAK) ** 2)
+            # short-season fallback rows were fit through carried_from (s-2/s-3): age the
+            # full gap, not one year (2026-10-22b)
+            yrs = (season - int(cf)) if cf == cf else 1
+            v = v + pi.AGE_QUAD * ((a1 - pi.AGE_PEAK) ** 2 - (a1 - yrs - pi.AGE_PEAK) ** 2)
         imp[int(pid)] = float(v)
     return ms.team_nets(imp, season)
 
@@ -166,12 +170,13 @@ def top7_adjust(season):
     r1 = pi.ratings_through(season - 1, r)
     imp = dict(zip(r1.PLAYER_ID, r1.impact_total))
     proj = ms.load(season)
+    ud = ms.unrated_default(season)
     adj = {}
     for ab, g in proj.groupby("team"):
         g = g.sort_values("proj_pres", ascending=False)
         def net(gg):
             tm = gg.proj_pres.sum()
-            v = gg.PLAYER_ID.map(lambda p: imp.get(int(p), pi.PRIOR_BASE))
+            v = gg.PLAYER_ID.map(lambda p: imp.get(int(p), ud))
             return float((v * gg.proj_pres * (5.0 / tm)).sum()) if tm > 0 else 0.0
         adj[ab] = net(g.head(7)) - net(g)
     return adj

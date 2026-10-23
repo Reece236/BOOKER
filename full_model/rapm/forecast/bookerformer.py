@@ -136,6 +136,12 @@ DEF_NUDGE = float(os.environ.get("BF_DEF_NUDGE", 0.0))     # was 1.0; OFF per 20
 # TAU_RATING*TAU_OFF_MIN so RAPM can't inflate a connective vet's offense.
 USAGE_REF = 22.0
 TAU_OFF_MIN = float(os.environ.get("BF_TAU_OFF_MIN", 0.45))
+# Leverage-scaled stint weight (2026-10-22b gate, HANDOFF 0.9): each stint's likelihood
+# weight x c = clip(1 + LEV_KAPPA*(LI - 1), .5, 1.3), poss-weighted mean 1 per season
+# (forecast.leverage.stint_weight). 0 = off.
+LEV_KAPPA = float(os.environ.get("BF_LEV_KAPPA", 0.0))
+# Training window in seasons (rating THROUGH s trains on s-W+1..s). 3 = production.
+TRAIN_WINDOW = int(os.environ.get("BF_WINDOW", 3))
 
 
 def _device() -> torch.device:
@@ -299,13 +305,18 @@ def prepare_data(data, train_seasons, target_season) -> FormerData:
         lg = _season_league(d)
         league_ref = lg
         gid = d.GAME_ID.to_numpy()
-        for hl, al, poss, yo, yd, g in zip(d.home, d.away, d.POSS,
-                                           d.Y_OFF_HOME, d.Y_DEF_HOME, gid):
+        if LEV_KAPPA:
+            from . import leverage as lev
+            levc = lev.stint_weight(s, LEV_KAPPA, d.POSS.to_numpy(), gid)
+        else:
+            levc = np.ones(len(d))
+        for hl, al, poss, yo, yd, g, lc in zip(d.home, d.away, d.POSS,
+                                               d.Y_OFF_HOME, d.Y_DEF_HOME, gid, levc):
             ho = _lineup_rows(hl, pid_to_idx)
             aw = _lineup_rows(al, pid_to_idx)
             if ho is None or aw is None:
                 continue
-            wt = float(poss) * float(dw)
+            wt = float(poss) * float(dw) * float(lc)
             order_key = s * 10_000_000 + int(g) % 10_000_000
             # home offense vs away defense
             off_rows.append(ho); def_rows.append(aw)

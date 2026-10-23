@@ -73,3 +73,49 @@ def build(seasons=range(2018, 2027)):
 
 if __name__ == "__main__":
     build()
+
+
+# ---------------------------------------------------------------------------
+# Leverage-scaled stint weights (2026-10-22b gate; see HANDOFF 0.9)
+# ---------------------------------------------------------------------------
+# li_raw -> LI normalizer of the shipped parquet (poss-weighted LI = 1 over 2018-26;
+# recomputed scale 0.01893-0.01895 on 2019/2025/2026). Seasons missing from the parquet
+# (2015-17, the live season) are computed on the fly with the same builder and scale.
+LI_SCALE = 0.01894
+_LI = {}
+
+
+def stint_li(s, gids=None):
+    """LI per REGULAR-SEASON stint of season s, aligned to BookerData.STINTS[s] (file
+    order). Uses cache/stint_leverage.parquet when its rows match (`gids` checked if
+    given); otherwise recomputes the season with season_leverage()."""
+    if s in _LI:
+        return _LI[s]
+    li = None
+    p = CACHE / "stint_leverage.parquet"
+    if p.exists():
+        L = pd.read_parquet(p)
+        l = L[L.season == s].sort_values("row")
+        if len(l) and (gids is None or (len(l) == len(gids)
+                                        and (l.GAME_ID.to_numpy() == np.asarray(gids)).all())):
+            li = l.LI.to_numpy(float)
+    if li is None and (CACHE / f"stints_{s}.csv").exists():
+        st = season_leverage(s).sort_values("row")
+        if gids is not None and (len(st) != len(gids) or (st.GAME_ID.to_numpy() != np.asarray(gids)).any()):
+            raise ValueError(f"stint leverage misaligned for {s}")
+        li = np.minimum(st.li_raw.to_numpy(float) / LI_SCALE, LI_CAP)
+    _LI[s] = li
+    return li
+
+
+def stint_weight(s, kappa, poss, gids=None):
+    """Per-stint likelihood multiplier c = clip(1 + kappa*(LI - 1), .5, 1.3), renormalised
+    to a possession-weighted mean of 1 within the season (total precision unchanged)."""
+    poss = np.asarray(poss, float)
+    if not kappa:
+        return np.ones(len(poss))
+    li = stint_li(s, gids)
+    if li is None or len(li) != len(poss):
+        raise ValueError(f"stint leverage unavailable/misaligned for {s}")
+    c = np.clip(1.0 + kappa * (li - 1.0), 0.5, 1.3)
+    return c / np.average(c, weights=np.clip(poss, 1e-6, None))
